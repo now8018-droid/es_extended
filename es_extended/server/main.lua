@@ -111,7 +111,8 @@ local function onPlayerDropped(playerId, reason, cb)
         Core.playersByIdentifier[xPlayer.identifier] = nil
         Core.PlayerCache[playerId] = nil
         Core.ActivePlayerSync[playerId] = nil
-        Core.PlayerCoords[playerId] = nil
+        Core.RemovePlayerScopeEntry(playerId)
+        Core.ClearSuspiciousPlayer(playerId)
         Core.EventThrottle[playerId] = nil
 
         resolve()
@@ -193,9 +194,22 @@ local function decodePlayerField(value, fallback)
         return fallback
     end
 
-    local decoded = json.decode(value)
-    if decoded == nil then
+    local ok, decoded = pcall(json.decode, value)
+    if not ok or decoded == nil or type(decoded) ~= type(fallback) then
         return fallback
+    end
+
+    return decoded
+end
+
+local function decodeOptionalJsonTable(value)
+    if not value or value == "" then
+        return {}
+    end
+
+    local ok, decoded = pcall(json.decode, value)
+    if not ok or type(decoded) ~= "table" then
+        return {}
     end
 
     return decoded
@@ -264,8 +278,8 @@ local function buildPlayerLoadPayload(identifier, playerId, result)
         grade_name = gradeObject.name,
         grade_label = gradeObject.label,
         grade_salary = gradeObject.salary,
-        skin_male = gradeObject.skin_male and json.decode(gradeObject.skin_male) or {},
-        skin_female = gradeObject.skin_female and json.decode(gradeObject.skin_female) or {},
+        skin_male = decodeOptionalJsonTable(gradeObject.skin_male),
+        skin_female = decodeOptionalJsonTable(gradeObject.skin_female),
     }
 
     -- โหลด loadout จาก DB เสมอ (เซิร์ฟใช้ xPlayer / payload; การให้อาวุธบน ped เป็นของกระเป๋าคัสตอมเมื่อ CustomInventory)

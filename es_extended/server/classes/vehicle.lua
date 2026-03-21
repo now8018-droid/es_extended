@@ -30,6 +30,19 @@ local function dbUpdate(query, params, cb)
 	end
 end
 
+local function decodeStoredVehicleProps(value)
+	if not value or value == "" then
+		return nil
+	end
+
+	local ok, decoded = pcall(json.decode, value)
+	if not ok or type(decoded) ~= "table" then
+		return nil
+	end
+
+	return decoded
+end
+
 ---@class CVehicleData
 ---@field plate string
 ---@field netId number
@@ -67,7 +80,10 @@ Core.vehicleClass = {
 		if not vehicleProps then
 			return
 		end
-		vehicleProps = json.decode(vehicleProps)
+		vehicleProps = decodeStoredVehicleProps(vehicleProps)
+		if not vehicleProps or vehicleProps.model == nil then
+			return
+		end
 
 		if type(vehicleProps.model) ~= "number" then
 			vehicleProps.model = joaat(vehicleProps.model)

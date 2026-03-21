@@ -14,14 +14,23 @@ Core.PlayersByJob = {}
 Core.JobsLoaded = false
 Core.PlayerCache = {}
 Core.SaveQueue = {}
-Core.WriteQueue = { players = Core.SaveQueue, interval = Config.SaveInterval, scheduled = false }
+Core.WriteQueue = { players = Core.SaveQueue, scheduled = false }
 Core.ActivePlayerSync = {}
+Core.AsyncLogQueue = { head = 1, tail = 0, items = {}, scheduled = false, dropped = 0, lastDropNoticeAt = 0 }
+Core.SuspiciousPlayers = {}
 Core.LoginQueue = { head = 1, tail = 0, items = {} }
 Core.LoginQueueScheduled = false
 Core.PlayerSyncScheduled = false
 Core.EventThrottle = {}
 Core.PlayerCoords = {}
 Core.PlayerScopeBuckets = {}
+Core.ScopeDirtyPlayers = {}
+Core.ScopeWorkerScheduled = false
+Core.ScopeWorkerDelayMs = nil
+Core.ScopeWorkerGeneration = 0
+Core.ScopeFullRebuildTimerScheduled = false
+Core.ScopeRebuildJob = nil
+Core.ScopeRebuildRevision = 0
 Core.DetectedWeapons = {}
 Core.WeaponScanCache = {}
 Core.Performance = {
@@ -57,7 +66,7 @@ local function scheduleWriteQueueFlush()
     end
 
     Core.WriteQueue.scheduled = true
-    SetTimeout(Core.WriteQueue.interval, function()
+    SetTimeout(Core.Config.Save.interval(), function()
         Core.WriteQueue.scheduled = false
         Core.SavePlayers()
 
@@ -73,7 +82,7 @@ local function schedulePlayerSyncFlush()
     end
 
     Core.PlayerSyncScheduled = true
-    SetTimeout(Config.InventorySyncInterval, function()
+    SetTimeout(Core.Config.Sync.inventoryInterval(), function()
         Core.PlayerSyncScheduled = false
         Core.FlushPendingPlayerSync()
 
@@ -90,116 +99,243 @@ local function getScopeBucketKey(coords)
     )
 end
 
--- Event-driven: when UseClientStatebagCoords, clients push coords to statebag.
--- Batched to avoid CPU spikes when many players.
-local function rebuildScopeFromStatebag()
+local function removeSourceFromScopeBuckets(source, cachedPlayer)
+    local entry = cachedPlayer or Core.PlayerCoords[source]
+    if not entry then
+        return
+    end
+
+    local scopedBuckets = Core.PlayerScopeBuckets[entry.routingBucket]
+    if not scopedBuckets then
+        return
+    end
+
+    local bucketPlayers = scopedBuckets[entry.bucketKey]
+    if not bucketPlayers then
+        return
+    end
+
+    for index = #bucketPlayers, 1, -1 do
+        if bucketPlayers[index] == source then
+            bucketPlayers[index] = bucketPlayers[#bucketPlayers]
+            bucketPlayers[#bucketPlayers] = nil
+            break
+        end
+    end
+
+    if #bucketPlayers == 0 then
+        scopedBuckets[entry.bucketKey] = nil
+        if not next(scopedBuckets) then
+            Core.PlayerScopeBuckets[entry.routingBucket] = nil
+        end
+    end
+end
+
+local function setSourceScopeEntry(source, coords, routingBucket, ped)
+    local cachedPlayer = Core.PlayerCoords[source]
+    if cachedPlayer then
+        removeSourceFromScopeBuckets(source, cachedPlayer)
+    end
+
+    local bucketKey = getScopeBucketKey(coords)
+    Core.PlayerCoords[source] = {
+        coords = coords,
+        ped = ped or GetPlayerPed(source),
+        routingBucket = routingBucket,
+        bucketKey = bucketKey,
+    }
+
+    local scopedBuckets = Core.PlayerScopeBuckets[routingBucket]
+    if not scopedBuckets then
+        scopedBuckets = {}
+        Core.PlayerScopeBuckets[routingBucket] = scopedBuckets
+    end
+
+    local bucketPlayers = scopedBuckets[bucketKey]
+    if not bucketPlayers then
+        bucketPlayers = {}
+        scopedBuckets[bucketKey] = bucketPlayers
+    end
+
+    bucketPlayers[#bucketPlayers + 1] = source
+end
+
+function Core.RemovePlayerScopeEntry(source)
+    removeSourceFromScopeBuckets(source)
+    Core.PlayerCoords[source] = nil
+    Core.ScopeDirtyPlayers[source] = nil
+end
+
+local function collectScopeCoords(source)
+    local ped
+    if Config.UseClientStatebagCoords then
+        local stateBag = Player(source).state
+        local coords = stateBag and stateBag.coords
+        if coords and type(coords) == "table" and coords.x and coords.y then
+            return vector3(coords.x, coords.y, coords.z or 0)
+        end
+    end
+
+    ped = GetPlayerPed(source)
+    if ped and ped > 0 then
+        return GetEntityCoords(ped), ped
+    end
+
+    return nil, ped
+end
+
+local function processScopeSource(source, useStatebag)
+    if not ESX.Players[source] then
+        Core.RemovePlayerScopeEntry(source)
+        return
+    end
+
+    local coords, ped
+    if useStatebag then
+        coords, ped = collectScopeCoords(source)
+    else
+        ped = GetPlayerPed(source)
+        if ped and ped > 0 then
+            coords = GetEntityCoords(ped)
+        end
+    end
+
+    if coords then
+        setSourceScopeEntry(source, coords, GetPlayerRoutingBucket(source), ped)
+    else
+        Core.RemovePlayerScopeEntry(source)
+    end
+end
+
+local function queueScopeWorker(delayMs)
+    delayMs = math.max(0, delayMs or 0)
+
+    if Core.ScopeWorkerScheduled and Core.ScopeWorkerDelayMs ~= nil and Core.ScopeWorkerDelayMs <= delayMs then
+        return
+    end
+
+    Core.ScopeWorkerGeneration += 1
+    local generation = Core.ScopeWorkerGeneration
+    Core.ScopeWorkerScheduled = true
+    Core.ScopeWorkerDelayMs = delayMs
+
+    SetTimeout(delayMs, function()
+        if generation ~= Core.ScopeWorkerGeneration then
+            return
+        end
+
+        Core.ScopeWorkerScheduled = false
+        Core.ScopeWorkerDelayMs = nil
+
+        local rebuildJob = Core.ScopeRebuildJob
+        if rebuildJob then
+            local processed = 0
+            local batchSize = Core.Config.Scope.batchSize()
+            local rebuildRevision = rebuildJob.revision
+
+            if rebuildRevision ~= Core.ScopeRebuildRevision or Core.ScopeRebuildJob ~= rebuildJob then
+                queueScopeWorker(0)
+                return
+            end
+
+            if rebuildJob.index == 1 then
+                Core.PlayerCoords = {}
+                Core.PlayerScopeBuckets = {}
+            end
+
+            while rebuildJob.index <= #rebuildJob.sources and processed < batchSize do
+                if rebuildRevision ~= Core.ScopeRebuildRevision or Core.ScopeRebuildJob ~= rebuildJob then
+                    queueScopeWorker(0)
+                    return
+                end
+
+                local source = rebuildJob.sources[rebuildJob.index]
+                rebuildJob.index += 1
+                processed += 1
+                processScopeSource(source, rebuildJob.useStatebag)
+            end
+
+            if rebuildRevision ~= Core.ScopeRebuildRevision or Core.ScopeRebuildJob ~= rebuildJob then
+                queueScopeWorker(0)
+                return
+            end
+
+            if rebuildJob.index <= #rebuildJob.sources then
+                queueScopeWorker(0)
+                return
+            end
+
+            Core.ScopeRebuildJob = nil
+        end
+
+        if next(Core.ScopeDirtyPlayers) then
+            local processed = 0
+            local batchSize = Core.Config.Scope.dirtyBatchSize()
+            for source in pairs(Core.ScopeDirtyPlayers) do
+                Core.ScopeDirtyPlayers[source] = nil
+                processed += 1
+                processScopeSource(source, Config.UseClientStatebagCoords)
+
+                if processed >= batchSize then
+                    break
+                end
+            end
+
+            if next(Core.ScopeDirtyPlayers) then
+                queueScopeWorker(Core.Config.Scope.dirtyFlushInterval())
+            end
+        end
+    end)
+end
+
+local function requestScopeRebuild(useStatebag)
     local sources = {}
     for source in pairs(ESX.Players) do
         sources[#sources + 1] = source
     end
+
+    Core.ScopeRebuildRevision += 1
+
     if #sources == 0 then
+        Core.ScopeRebuildJob = nil
         Core.PlayerCoords = {}
         Core.PlayerScopeBuckets = {}
         return
     end
 
-    local scopedPlayers = {}
-    local scopeBuckets = {}
-    local bucketSize = Config.PlayerScopeBucketSize
-    local batchSize = math.max(1, Config.ScopeBatchSize or 64)
-    local idx = 1
-
-    local function processChunk()
-        for _ = 1, batchSize do
-            if idx > #sources then
-                Core.PlayerCoords = scopedPlayers
-                Core.PlayerScopeBuckets = scopeBuckets
-                return
-            end
-            local source = sources[idx]
-            idx += 1
-            local stateBag = Player(source).state
-            local coords = stateBag.coords
-            if coords and type(coords) == "table" and coords.x and coords.y then
-                local bucketKey = ("%s:%s"):format(
-                    math.floor(coords.x / bucketSize),
-                    math.floor(coords.y / bucketSize)
-                )
-                local routingBucket = GetPlayerRoutingBucket(source)
-                scopedPlayers[source] = {
-                    coords = vector3(coords.x, coords.y, coords.z or 0),
-                    ped = GetPlayerPed(source),
-                    routingBucket = routingBucket,
-                    bucketKey = bucketKey,
-                }
-                scopeBuckets[routingBucket] = scopeBuckets[routingBucket] or {}
-                scopeBuckets[routingBucket][bucketKey] = scopeBuckets[routingBucket][bucketKey] or {}
-                scopeBuckets[routingBucket][bucketKey][#scopeBuckets[routingBucket][bucketKey] + 1] = source
-            end
-        end
-        SetTimeout(0, processChunk)
-    end
-    processChunk()
+    Core.ScopeRebuildJob = {
+        revision = Core.ScopeRebuildRevision,
+        useStatebag = useStatebag,
+        sources = sources,
+        index = 1,
+    }
+    queueScopeWorker(0)
 end
 
-local function rebuildScopeFromServerLoop()
-    local sources = {}
-    for source in pairs(ESX.Players) do
-        sources[#sources + 1] = source
-    end
-    if #sources == 0 then
-        Core.PlayerCoords = {}
-        Core.PlayerScopeBuckets = {}
+local function markScopeDirty(source)
+    if not source then
         return
     end
 
-    local scopedPlayers = {}
-    local scopeBuckets = {}
-    local batchSize = math.max(1, Config.ScopeBatchSize or 64)
-    local idx = 1
-
-    local function processChunk()
-        for _ = 1, batchSize do
-            if idx > #sources then
-                Core.PlayerCoords = scopedPlayers
-                Core.PlayerScopeBuckets = scopeBuckets
-                return
-            end
-            local source = sources[idx]
-            idx += 1
-            local ped = GetPlayerPed(source)
-            if ped and ped > 0 then
-                local coords = GetEntityCoords(ped)
-                local routingBucket = GetPlayerRoutingBucket(source)
-                local bucketKey = getScopeBucketKey(coords)
-                scopedPlayers[source] = {
-                    coords = coords,
-                    ped = ped,
-                    routingBucket = routingBucket,
-                    bucketKey = bucketKey,
-                }
-                scopeBuckets[routingBucket] = scopeBuckets[routingBucket] or {}
-                scopeBuckets[routingBucket][bucketKey] = scopeBuckets[routingBucket][bucketKey] or {}
-                scopeBuckets[routingBucket][bucketKey][#scopeBuckets[routingBucket][bucketKey] + 1] = source
-            end
-        end
-        SetTimeout(0, processChunk)
-    end
-    processChunk()
+    Core.ScopeDirtyPlayers[source] = true
+    queueScopeWorker(Core.Config.Scope.dirtyFlushInterval())
 end
 
-local scopeRebuildScheduled = false
 local function scheduleScopeRebuild()
-    if scopeRebuildScheduled then return end
-    scopeRebuildScheduled = true
-    local interval = Config.PlayerScopeRefreshInterval or 2000
+    if Core.ScopeFullRebuildTimerScheduled then
+        return
+    end
+
+    Core.ScopeFullRebuildTimerScheduled = true
+    local interval = math.max(
+        Core.Config.Scope.playerRefreshInterval(),
+        Core.Config.Scope.fullRefreshInterval()
+    )
+
     SetTimeout(interval, function()
-        scopeRebuildScheduled = false
-        if Config.UseClientStatebagCoords then
-            rebuildScopeFromStatebag()
-        else
-            rebuildScopeFromServerLoop()
-        end
+        Core.ScopeFullRebuildTimerScheduled = false
+        requestScopeRebuild(Config.UseClientStatebagCoords)
+
         if next(ESX.Players) then
             scheduleScopeRebuild()
         end
@@ -208,43 +344,31 @@ end
 
 local function StartPlayerScopeCache()
     if Config.UseClientStatebagCoords then
-        -- Event-driven: immediate individual update + debounced full rebuild
         AddStateBagChangeHandler("coords", "player", function(bagName, _, value)
             local source = tonumber(bagName:gsub("player:", ""))
             if source and value and value.x then
-                local coords = vector3(value.x, value.y, value.z or 0)
-                local routingBucket = GetPlayerRoutingBucket(source)
-                local bucketKey = getScopeBucketKey(coords)
-                
-                Core.PlayerCoords[source] = {
-                    coords = coords,
-                    ped = GetPlayerPed(source),
-                    routingBucket = routingBucket,
-                    bucketKey = bucketKey,
-                }
-            end
-
-            if not scopeRebuildScheduled and next(ESX.Players) then
-                scheduleScopeRebuild()
+                markScopeDirty(source)
             end
         end)
         AddEventHandler("esx:playerLoaded", function(_, xPlayer)
-            if xPlayer and xPlayer.source and not scopeRebuildScheduled then
-                scheduleScopeRebuild()
+            if xPlayer and xPlayer.source then
+                markScopeDirty(xPlayer.source)
             end
         end)
         AddEventHandler("playerDropped", function()
-            if not scopeRebuildScheduled and next(ESX.Players) then
+            Core.RemovePlayerScopeEntry(source)
+            if next(ESX.Players) then
                 scheduleScopeRebuild()
             end
         end)
+        requestScopeRebuild(true)
         scheduleScopeRebuild()
     else
         -- Legacy: polling loop (fallback for compatibility)
         CreateThread(function()
             while true do
-                Wait(Config.PlayerScopeRefreshInterval or 500)
-                rebuildScopeFromServerLoop()
+                Wait(Core.Config.Scope.playerRefreshInterval())
+                requestScopeRebuild(false)
             end
         end)
     end
@@ -421,7 +545,7 @@ function Core.ClearPlayerDirtyFlags(xPlayer)
 end
 
 local function markPlayerSyncActive(source, cache)
-    cache.nextSyncAt = GetGameTimer() + Config.InventorySyncRateLimit
+    cache.nextSyncAt = GetGameTimer() + Core.Config.Sync.inventoryRateLimit()
     Core.ActivePlayerSync[source] = true
     schedulePlayerSyncFlush()
 end
@@ -493,7 +617,7 @@ local function flushOnePlayerSync(source, cache, now)
     if not next(pendingAccounts) and not next(pendingInventory) then
         Core.ActivePlayerSync[source] = nil
     else
-        cache.nextSyncAt = now + Config.InventorySyncRateLimit
+        cache.nextSyncAt = now + Core.Config.Sync.inventoryRateLimit()
     end
 end
 
@@ -510,8 +634,8 @@ function Core.FlushPendingPlayerSync()
         end
     end
 
-    local batchSize = math.max(1, Config.SyncBatchSize or 8)
-    local batchDelay = math.max(0, Config.SyncBatchDelay or 10)
+    local batchSize = Core.Config.Sync.batchSize()
+    local batchDelay = Core.Config.Sync.batchDelay()
     local stepKb = Config.GCStepSize or 0
     local function runGC()
         if stepKb > 0 and collectgarbage and collectgarbage("count") then

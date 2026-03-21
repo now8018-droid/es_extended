@@ -148,6 +148,20 @@
 ---@param metadata table
 ---@return xPlayer
 local stringLower = string.lower
+local getItemLimit
+
+local function decodeOptionalJsonTable(value)
+    if not value or value == "" then
+        return {}
+    end
+
+    local ok, decoded = pcall(json.decode, value)
+    if not ok or type(decoded) ~= "table" then
+        return {}
+    end
+
+    return decoded
+end
 
 local function normalizeAccountName(accountName)
     if type(accountName) ~= "string" then
@@ -199,7 +213,7 @@ local function normalizeAccountsTable(rawAccounts)
     return accounts
 end
 
-local function getItemLimit(itemName)
+function getItemLimit(itemName)
     local item = ESX.Items[itemName]
     if not item then
         return Config.DefaultItemLimit
@@ -296,7 +310,7 @@ function CreateExtendedPlayer(playerId, identifier, group, accounts, inventory, 
     end
     job.onDuty = self.metadata.jobDuty
 
-    ExecuteCommand(("add_principal identifier.%s group.%s"):format(self.identifier, self.group))
+    Core.Services.Permission.attachPlayerGroup(self.identifier, self.group)
 
     local normalizedAccounts = normalizeAccountsTable(accounts)
     local accountIndex = 0
@@ -360,6 +374,8 @@ function CreateExtendedPlayer(playerId, identifier, group, accounts, inventory, 
             self.triggerEvent("esx:updatePlayerData", "metadata", self.metadata)
         end)
     end
+
+    Core.Services.Inventory.attach(self)
 
     function self.markInventoryDirty()
         self.inventoryMinimalDirty = true
@@ -499,8 +515,6 @@ function CreateExtendedPlayer(playerId, identifier, group, accounts, inventory, 
     function self.setGroup(newGroup)
         local lastGroup = self.group
 
-        ExecuteCommand(("remove_principal identifier.%s group.%s"):format(self.identifier, self.group))
-
         self.group = newGroup
         Core.MarkPlayerDirty(self, "group")
 
@@ -508,7 +522,7 @@ function CreateExtendedPlayer(playerId, identifier, group, accounts, inventory, 
         self.triggerEvent("esx:setGroup", self.group, lastGroup)
         Player(self.source).state:set("group", self.group, true)
 
-        ExecuteCommand(("add_principal identifier.%s group.%s"):format(self.identifier, self.group))
+        Core.Services.Permission.changePlayerGroup(self.identifier, lastGroup, self.group)
     end
 
     function self.getGroup()
@@ -802,133 +816,6 @@ function CreateExtendedPlayer(playerId, identifier, group, accounts, inventory, 
         return inventoryItem
     end
 
-    function self.addInventoryItem(itemName, count)
-        local startedAt = GetGameTimer()
-        local item = self.getInventoryItem(itemName)
-        local itemDefinition = ESX.Items[itemName]
-
-        if not itemDefinition then
-            return error(("Tried To Add Invalid Item ^5%s^1 For Player ^5%s^1!"):format(itemName, self.playerId))
-        end
-
-        count = ESX.Math.Round(count)
-        if count <= 0 then
-            return error(("Player ID:^5%s Tried add an invalid count -> %s of %s"):format(self.playerId, count, itemName))
-        end
-
-        local limit = item.limit
-        if limit ~= -1 and (item.count + count) > limit then
-            return false
-        end
-
-        local inventoryState = self.state.inventory
-        local nextCount = (inventoryState[item.name] or 0) + count
-        inventoryState[item.name] = nextCount
-        item.count = nextCount
-        if not self.updateMinimalInventoryCache(item.name, nextCount) then
-            self.markInventoryDirty()
-        end
-        self.weight = self.weight + (item.weight * count)
-
-        Core.MarkPlayerDirty(self, "inventory")
-        Core.QueueInventorySync(self, item.name, item.count, count, item.label)
-        Core.DebugCounter("inventory_mutations")
-        if item.rare and count >= (Config.CriticalRareItemDelta or 1) then
-            Core.RequestImmediateSave(self, "critical_rare_add")
-        end
-
-        TriggerEvent("esx:onAddInventoryItem", self.source, item.name, item.count)
-        Core.DebugDuration("xPlayer.addInventoryItem", startedAt)
-        return true
-    end
-
-    function self.removeInventoryItem(itemName, count)
-        local startedAt = GetGameTimer()
-        local itemDefinition = ESX.Items[itemName]
-        if not itemDefinition then
-            self.markInventoryDirty()
-            return error(("Tried To Remove Invalid Item ^5%s^1 For Player ^5%s^1!"):format(itemName, self.playerId))
-        end
-
-        local item = self.getInventoryItem(itemName)
-
-        count = ESX.Math.Round(count)
-        if count <= 0 then
-            return error(("Player ID:^5%s Tried remove a Invalid count -> %s of %s"):format(self.playerId, count, itemName))
-        end
-
-        local inventoryState = self.state.inventory
-        local currentCount = inventoryState[item.name] or item.count
-        if currentCount < count then
-            return false
-        end
-
-        local nextCount = currentCount - count
-        inventoryState[item.name] = nextCount
-        item.count = nextCount
-        if not self.updateMinimalInventoryCache(item.name, nextCount) then
-            self.markInventoryDirty()
-        end
-        self.weight = self.weight - (item.weight * count)
-        if self.weight < 0 then
-            self.weight = 0
-        end
-
-        Core.MarkPlayerDirty(self, "inventory")
-        Core.QueueInventorySync(self, item.name, item.count, -count, item.label)
-        Core.DebugCounter("inventory_mutations")
-        if item.rare and count >= (Config.CriticalRareItemDelta or 1) then
-            Core.RequestImmediateSave(self, "critical_rare_remove")
-        end
-
-        TriggerEvent("esx:onRemoveInventoryItem", self.source, item.name, item.count)
-        Core.DebugDuration("xPlayer.removeInventoryItem", startedAt)
-        return true
-    end
-
-    function self.setInventoryItem(itemName, count)
-        if not ESX.Items[itemName] then
-            self.markInventoryDirty()
-            return false
-        end
-
-        local item = self.getInventoryItem(itemName)
-
-        count = ESX.Math.Round(count)
-        if not item or count < 0 then
-            return false
-        end
-
-        local currentCount = self.state.inventory[item.name] or item.count or 0
-        if currentCount == count then
-            return true
-        end
-
-        local delta = count - currentCount
-        self.state.inventory[item.name] = count
-        item.count = count
-        if not self.updateMinimalInventoryCache(item.name, count) then
-            self.markInventoryDirty()
-        end
-
-        self.weight = self.weight + (item.weight * delta)
-        if self.weight < 0 then
-            self.weight = 0
-        end
-
-        Core.MarkPlayerDirty(self, "inventory")
-        Core.QueueInventorySync(self, item.name, item.count, delta, item.label)
-        Core.DebugCounter("inventory_mutations")
-
-        if delta > 0 then
-            TriggerEvent("esx:onAddInventoryItem", self.source, item.name, item.count)
-        else
-            TriggerEvent("esx:onRemoveInventoryItem", self.source, item.name, item.count)
-        end
-
-        return true
-    end
-
     function self.clearInventory()
         local inventoryState = self.state.inventory
 
@@ -1030,8 +917,8 @@ function CreateExtendedPlayer(playerId, identifier, group, accounts, inventory, 
             grade_label = gradeObject.label,
             grade_salary = gradeObject.salary,
 
-            skin_male = gradeObject.skin_male and json.decode(gradeObject.skin_male) or {},
-            skin_female = gradeObject.skin_female and json.decode(gradeObject.skin_female) or {},
+            skin_male = decodeOptionalJsonTable(gradeObject.skin_male),
+            skin_female = decodeOptionalJsonTable(gradeObject.skin_female),
         }
         self.state.job = self.job
 
@@ -1286,10 +1173,6 @@ function CreateExtendedPlayer(playerId, identifier, group, accounts, inventory, 
 
         Core.MarkPlayerDirty(self, "metadata")
         scheduleMetadataSync()
-    end
-
-    function self.executeCommand(command)
-        ExecuteCommand(command)
     end
 
     return self
