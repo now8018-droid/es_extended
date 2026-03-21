@@ -9,6 +9,31 @@ local AmbulanceMenuState                                  = {
 	previousOpener = nil
 }
 
+local function ensureESX()
+	if ESX == nil then
+		local ok, shared = pcall(function()
+			return exports['es_extended']:getSharedObject()
+		end)
+
+		if ok then
+			ESX = shared
+		end
+	end
+
+	return ESX
+end
+
+local function getCurrentJobData()
+	local esx = ensureESX()
+	return esx and esx.PlayerData and esx.PlayerData.job or nil
+end
+
+CreateThread(function()
+	while ensureESX() == nil do
+		Wait(200)
+	end
+end)
+
 local function safeCloseMenu(menu)
 	if menu and type(menu.close) == 'function' then
 		menu.close()
@@ -20,14 +45,19 @@ function OpenAmbulanceActionsMenu()
 		{ label = 'เปลี่ยนชุด', value = 'cloakroom' }
 	}
 
-	local jobData = ESX.PlayerData and ESX.PlayerData.job
+	local esx = ensureESX()
+	if not esx or not esx.UI or not esx.UI.Menu then
+		return
+	end
+
+	local jobData = getCurrentJobData()
 	if jobData and (jobData.grade_name == 'boss' or jobData.grade_name == 'mini_boss') then
 		table.insert(elements, { label = 'เมนูผอ.', value = 'boss_actions' })
 	end
 
-	ESX.UI.Menu.CloseAll()
+	esx.UI.Menu.CloseAll()
 
-	ESX.UI.Menu.Open('default', GetCurrentResourceName(), 'ambulance_actions', {
+	esx.UI.Menu.Open('default', GetCurrentResourceName(), 'ambulance_actions', {
 		title    = _U('ambulance'),
 		align    = 'top-right',
 		elements = elements
@@ -57,7 +87,10 @@ local function pushNotify(text, notifyType, notifyTime)
 	end)
 
 	if not ok then
-		ESX.ShowNotification(text)
+		local esx = ensureESX()
+		if esx and esx.ShowNotification then
+			esx.ShowNotification(text)
+		end
 	end
 end
 
@@ -690,7 +723,7 @@ Citizen.CreateThread(function()
 	while true do
 		local sleep = 1200
 		local playerCoords = GetEntityCoords(PlayerPedId())
-		local playerJob = ESX.PlayerData and ESX.PlayerData.job
+		local playerJob = getCurrentJobData()
 		local isAmbulance = playerJob and playerJob.name == 'ambulance'
 		local letSleep, isInMarker, hasExited = true, false, false
 		local currentHospital, currentPart, currentPartNum
@@ -815,7 +848,7 @@ Citizen.CreateThread(function()
 end)
 
 AddEventHandler('esx_ambulancejob:hasEnteredMarker', function(hospital, part, partNum)
-	local playerJob = ESX.PlayerData and ESX.PlayerData.job
+	local playerJob = getCurrentJobData()
 	if playerJob and playerJob.name == 'ambulance' then
 		if part == 'AmbulanceActions' then
 			CurrentAction = part
@@ -845,7 +878,10 @@ end)
 
 AddEventHandler('esx_ambulancejob:hasExitedMarker', function(hospital, part, partNum)
 	if not isInShopMenu then
-		ESX.UI.Menu.CloseAll()
+		local esx = ensureESX()
+		if esx and esx.UI and esx.UI.Menu then
+			esx.UI.Menu.CloseAll()
+		end
 	end
 
 	CurrentAction = nil
@@ -853,14 +889,18 @@ end)
 
 RegisterCommand('ambulance_open_mobile_menu', function()
 	if IsDead then return end
-	if not (ESX.PlayerData and ESX.PlayerData.job and ESX.PlayerData.job.name == 'ambulance') then return end
+	local playerJob = getCurrentJobData()
+	if not (playerJob and playerJob.name == 'ambulance') then return end
 	OpenMobileAmbulanceActionsMenu()
 end, false)
 
 RegisterKeyMapping('ambulance_open_mobile_menu', 'Open Ambulance Mobile Menu', 'keyboard', 'F6')
 
 local function closeAmbulanceMenuState()
-	ESX.UI.Menu.CloseAll()
+	local esx = ensureESX()
+	if esx and esx.UI and esx.UI.Menu then
+		esx.UI.Menu.CloseAll()
+	end
 	AmbulanceMenuState.open = false
 	AmbulanceMenuState.level = 'none'
 	AmbulanceMenuState.previousOpener = nil
@@ -1015,12 +1055,17 @@ function setUniform(uniformIndex)
 end
 
 function OpenVehicleSpawnerMenu(hospital, partNum)
+	local esx = ensureESX()
+	if not esx or not esx.UI or not esx.UI.Menu or not esx.Math then
+		return
+	end
+
 	local playerCoords = GetEntityCoords(PlayerPedId())
 	local elements = {
 		{ label = '<i class="fa-sharp fa-solid fa-dollar-sign"></i>  :  ซื้อรถ', action = 'buy_vehicle' }
 	}
 
-	ESX.UI.Menu.Open('default', GetCurrentResourceName(), 'vehicle', {
+	esx.UI.Menu.Open('default', GetCurrentResourceName(), 'vehicle', {
 		title    = _U('garage_title'),
 		align    = 'top-right',
 		elements = elements
@@ -1029,7 +1074,7 @@ function OpenVehicleSpawnerMenu(hospital, partNum)
 			local shopCoords = Config.Hospitals[hospital].Vehicles[partNum].InsideShop
 			local shopElements = {}
 
-			local jobData = ESX.PlayerData and ESX.PlayerData.job
+			local jobData = getCurrentJobData()
 			if not jobData then
 				return
 			end
@@ -1041,7 +1086,7 @@ function OpenVehicleSpawnerMenu(hospital, partNum)
 				for k, vehicle in ipairs(authorizedVehicles) do
 					table.insert(shopElements, {
 						label = ('%s - <span style="color:green;">%s</span>'):format(vehicle.label,
-							_U('shop_item', ESX.Math.GroupDigits(vehicle.price))),
+							_U('shop_item', esx.Math.GroupDigits(vehicle.price))),
 						name  = vehicle.label,
 						model = vehicle.model,
 						price = vehicle.price,
@@ -1060,13 +1105,17 @@ function OpenVehicleSpawnerMenu(hospital, partNum)
 end
 
 function OpenHelicopterSpawnerMenu(hospital, partNum)
+	local esx = ensureESX()
+	if not esx or not esx.UI or not esx.UI.Menu or not esx.Math then
+		return
+	end
+
 	local playerCoords = GetEntityCoords(PlayerPedId())
-	ESX.PlayerData = ESX.GetPlayerData()
 	local elements = {
 		{ label = '<i class="fa-sharp fa-solid fa-dollar-sign"></i>  :  ซื้อฮอ', action = 'buy_helicopter' }
 	}
 
-	ESX.UI.Menu.Open('default', GetCurrentResourceName(), 'helicopter_spawner', {
+	esx.UI.Menu.Open('default', GetCurrentResourceName(), 'helicopter_spawner', {
 		title    = _U('helicopter_title'),
 		align    = 'top-right',
 		elements = elements
@@ -1075,7 +1124,7 @@ function OpenHelicopterSpawnerMenu(hospital, partNum)
 			local shopCoords = Config.Hospitals[hospital].Helicopters[partNum].InsideShop
 			local shopElements = {}
 
-			local jobData = ESX.PlayerData and ESX.PlayerData.job
+			local jobData = getCurrentJobData()
 			if not jobData then
 				return
 			end
