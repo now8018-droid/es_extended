@@ -4,10 +4,9 @@
     Production-oriented refactor (performance + scalability + security)
 
     Key architecture blocks:
-    - PLAYER_CACHE  : O(1) cached player data (identifier/job/money/inventory/death)
+    - PLAYER_CACHE  : O(1) cached player data (identifier/job/death)
     - PLAYER_PEDS   : cached server ped handles
     - PLAYER_STATE  : rate limit windows, cooldowns, temp states
-    - JOB_INDEX     : O(1) player index by job name (no full GetPlayers loops)
     - LOCK_SYSTEM   : anti-race lock per source for state-mutating events
     - WRITE_QUEUE   : buffered DB writes (death status)
     - TASK_SCHEDULER: one lightweight scheduler thread for periodic jobs
@@ -18,7 +17,7 @@
     - Avoids direct DB writes during hot gameplay paths where possible.
 ]]
 
-local ESX = exports['es_extended']:getSharedObject()
+local ESX = nil
 
 -- Localized globals for lower global table lookup cost
 local GetGameTimer = GetGameTimer
@@ -34,7 +33,6 @@ local Wait = Wait
 local math_floor = math.floor
 local math_max = math.max
 local math_min = math.min
-local math_abs = math.abs
 local tonumber = tonumber
 local type = type
 local pairs = pairs
@@ -45,10 +43,9 @@ local table_concat = table.concat
 -- ------------------------------------------------------------------
 -- Runtime systems
 -- ------------------------------------------------------------------
-local PLAYER_CACHE = {} -- [src] = { source, identifier, job, money, inventory, isDead }
+local PLAYER_CACHE = {} -- [src] = { source, identifier, job, isDead, deathLoaded }
 local PLAYER_PEDS = {}  -- [src] = ped handle
 local PLAYER_STATE = {} -- [src] = { requestLimiter, actionCooldowns }
-local JOB_INDEX = {}    -- [jobName] = { [src] = true }
 local LOCK_SYSTEM = {}  -- [src] = true while processing protected mutation
 local WRITE_QUEUE = {
     death = {}          -- [identifier] = 0/1
@@ -199,66 +196,54 @@ local function oxExecute(query, params)
     return exports.oxmysql:execute(query, params)
 end
 
+local function getESX()
+    if ESX == nil and GetResourceState('es_extended') == 'started' then
+        ESX = exports['es_extended']:getSharedObject()
+    end
+
+    return ESX
+end
+
+local function getPlayerIdentifier(src)
+    local identifiers = GetPlayerIdentifiers(tostring(src))
+    for i = 1, #identifiers do
+        local identifier = identifiers[i]
+        if identifier and identifier:sub(1, 6):lower() == 'steam:' then
+            return identifier:lower()
+        end
+    end
+
+    return nil
+end
+
+local function getPlayerJob(src)
+    local player = Player(src)
+    local state = player and player.state
+    local job = state and state.job
+    if type(job) == 'table' and job.name then
+        return job
+    end
+
+    return nil
+end
+
 local function isAmbulance(cache)
     return cache and cache.job and cache.job.name == 'ambulance'
 end
 
-local function removeFromJobIndex(src, oldJobName)
-    if not isValidString(oldJobName) then return end
-    local bucket = JOB_INDEX[oldJobName]
-    if bucket then
-        bucket[src] = nil
-    end
-end
-
-local function addToJobIndex(src, jobName)
-    if not isValidString(jobName) then return end
-    local bucket = JOB_INDEX[jobName]
-    if not bucket then
-        bucket = {}
-        JOB_INDEX[jobName] = bucket
-    end
-    bucket[src] = true
-end
-
-local function setPlayerJobIndex(src, oldJobName, newJobName)
-    if oldJobName == newJobName then return end
-    removeFromJobIndex(src, oldJobName)
-    addToJobIndex(src, newJobName)
-end
-
-local function buildMoneyMap(xPlayer)
-    local accounts = xPlayer.getAccounts and xPlayer.getAccounts() or {}
-    local moneyMap = {}
-
-    for i = 1, #accounts do
-        local account = accounts[i]
-        if account and account.name then
-            moneyMap[account.name] = tonumber(account.money) or 0
-        end
-    end
-
-    return moneyMap
-end
-
-local function createPlayerCache(src, xPlayer)
-    if not xPlayer then return nil end
+local function createPlayerCache(src)
+    if not isValidSource(src) then return nil end
 
     local cache = {
         source = src,
-        identifier = xPlayer.identifier,
-        job = xPlayer.job,
-        money = buildMoneyMap(xPlayer),
-        inventory = xPlayer.getInventory and xPlayer.getInventory(true) or {},
-        isDead = (xPlayer.get('isDead') or xPlayer.get('dead')) and true or false,
+        identifier = getPlayerIdentifier(src),
+        job = getPlayerJob(src),
+        isDead = false,
+        deathLoaded = false,
     }
 
     PLAYER_CACHE[src] = cache
     PLAYER_PEDS[src] = GetPlayerPed(src)
-
-    local jobName = cache.job and cache.job.name or nil
-    addToJobIndex(src, jobName)
-
     ensurePlayerState(src)
     return cache
 end
@@ -268,54 +253,45 @@ local function getPlayerCache(src)
 
     local cache = PLAYER_CACHE[src]
     if cache then
+        cache.job = getPlayerJob(src)
         return cache
     end
 
-    local xPlayer = ESX.GetPlayerFromId(src)
-    if not xPlayer then
-        return nil
-    end
-
-    return createPlayerCache(src, xPlayer)
+    return createPlayerCache(src)
 end
 
 local function getXPlayer(src)
     if not isValidSource(src) then return nil end
-    return ESX.GetPlayerFromId(src)
+    local esx = getESX()
+    return esx and esx.GetPlayerFromId(src) or nil
 end
 
-local function setMoneyCache(cache, accountName, amount)
-    if not cache or not isValidString(accountName) then return end
-    cache.money[accountName] = math_max(0, math_floor(tonumber(amount) or 0))
-end
-
-local function adjustMoneyCache(cache, accountName, delta)
-    if not cache or not isValidString(accountName) then return end
-    local current = tonumber(cache.money[accountName]) or 0
-    cache.money[accountName] = math_max(0, current + (tonumber(delta) or 0))
-end
-
-local function setInventoryCount(cache, itemName, count)
-    if not cache or not isValidString(itemName) then return end
-
-    local nextCount = math_max(0, math_floor(tonumber(count) or 0))
-    local current = cache.inventory[itemName]
-
-    if nextCount <= 0 then
-        cache.inventory[itemName] = nil
-        return
+local function ensureDeathStateLoaded(cache)
+    if not cache or cache.deathLoaded then
+        return cache and cache.isDead or false
     end
 
-    if current then
-        current.count = nextCount
-        return
+    cache.deathLoaded = true
+    if not DeathDbColumn or not isValidString(cache.identifier) then
+        cache.isDead = false
+        return cache.isDead
     end
 
-    cache.inventory[itemName] = {
-        name = itemName,
-        count = nextCount,
-        label = itemName,
-    }
+    local dbDead = oxPrepareAwait(('SELECT %s FROM users WHERE identifier = ? LIMIT 1'):format(DeathDbColumn), { cache.identifier })
+    local value
+    if type(dbDead) == 'table' then
+        local first = dbDead[1]
+        if type(first) == 'table' then
+            value = first[DeathDbColumn]
+        else
+            value = dbDead[DeathDbColumn]
+        end
+    else
+        value = dbDead
+    end
+
+    cache.isDead = tonumber(value) == 1
+    return cache.isDead
 end
 
 local function setCacheDirtyDeath(identifier, isDead)
@@ -345,9 +321,6 @@ local function cleanupRuntimeCaches()
             PLAYER_PEDS[src] = nil
             PLAYER_STATE[src] = nil
             LOCK_SYSTEM[src] = nil
-            for _, bucket in pairs(JOB_INDEX) do
-                bucket[src] = nil
-            end
         end
     end
 end
@@ -388,16 +361,7 @@ local function isTargetNearSource(src, target, maxDistance)
 end
 
 local function getOnlineAmbulanceCount()
-    local bucket = JOB_INDEX.ambulance
-    if not bucket then return 0 end
-
-    local count = 0
-    for src in pairs(bucket) do
-        if PLAYER_CACHE[src] and GetPlayerPing(src) > 0 then
-            count = count + 1
-        end
-    end
-    return count
+    return tonumber(GlobalState['ambulance:count']) or 0
 end
 
 -- ------------------------------------------------------------------
@@ -461,7 +425,6 @@ AddEventHandler('playerDropped', function()
     local cache = PLAYER_CACHE[src]
     if cache then
         setCacheDirtyDeath(cache.identifier, cache.isDead)
-        removeFromJobIndex(src, cache.job and cache.job.name or nil)
     end
 
     PLAYER_CACHE[src] = nil
@@ -470,117 +433,66 @@ AddEventHandler('playerDropped', function()
     LOCK_SYSTEM[src] = nil
 end)
 
-RegisterNetEvent('esx:playerLoaded', function(playerId, xPlayer)
-    local src = tonumber(playerId)
-    if not isValidSource(src) then return end
-
-    local resolvedXPlayer = xPlayer or ESX.GetPlayerFromId(src)
-    if not resolvedXPlayer then return end
-
-    local cache = createPlayerCache(src, resolvedXPlayer)
-    if not cache then return end
-
-    if DeathDbColumn then
-        local dbDead = oxPrepareAwait(('SELECT %s FROM users WHERE identifier = ? LIMIT 1'):format(DeathDbColumn), { cache.identifier })
-        local value
-        if type(dbDead) == 'table' then
-            local first = dbDead[1]
-            if type(first) == 'table' then
-                value = first[DeathDbColumn]
-            else
-                value = dbDead[DeathDbColumn]
-            end
-        else
-            value = dbDead
-        end
-        local isDead = tonumber(value) == 1
-        cache.isDead = isDead
-    end
-end)
-
-RegisterNetEvent('esx:setJob', function(playerId, job)
-    local src = tonumber(playerId)
-    if not isValidSource(src) then return end
-
-    local cache = getPlayerCache(src)
-    if not cache then return end
-    if type(job) ~= 'table' then return end
-
-    local oldJobName = cache.job and cache.job.name or nil
-    local newJobName = job.name
-    cache.job = job
-
-    setPlayerJobIndex(src, oldJobName, newJobName)
-end)
-
-AddEventHandler('esx:setAccountMoney', function(playerId, accountName, money)
-    local cache = getPlayerCache(tonumber(playerId))
-    if not cache then return end
-    setMoneyCache(cache, accountName, money)
-end)
-
-AddEventHandler('esx:addAccountMoney', function(playerId, accountName, money)
-    local cache = getPlayerCache(tonumber(playerId))
-    if not cache then return end
-    adjustMoneyCache(cache, accountName, money)
-end)
-
-AddEventHandler('esx:removeAccountMoney', function(playerId, accountName, money)
-    local cache = getPlayerCache(tonumber(playerId))
-    if not cache then return end
-    adjustMoneyCache(cache, accountName, -math_abs(tonumber(money) or 0))
-end)
-
-AddEventHandler('esx:onAddInventoryItem', function(playerId, itemName, itemCount)
-    local cache = getPlayerCache(tonumber(playerId))
-    if not cache then return end
-    setInventoryCount(cache, itemName, itemCount)
-end)
-
-AddEventHandler('esx:onRemoveInventoryItem', function(playerId, itemName, itemCount)
-    local cache = getPlayerCache(tonumber(playerId))
-    if not cache then return end
-    setInventoryCount(cache, itemName, itemCount)
-end)
-
 -- ------------------------------------------------------------------
 -- Exports
 -- ------------------------------------------------------------------
 exports('GetPlayer', function(src)
     local cache = getPlayerCache(tonumber(src))
     if not cache then return nil end
+    ensureDeathStateLoaded(cache)
+
+    local xPlayer = getXPlayer(tonumber(src))
+    local money = nil
+    local inventory = nil
+
+    if xPlayer then
+        if xPlayer.getAccounts then
+            local accounts = xPlayer.getAccounts() or {}
+            money = {}
+            for i = 1, #accounts do
+                local account = accounts[i]
+                if account and account.name then
+                    money[account.name] = tonumber(account.money) or 0
+                end
+            end
+        end
+
+        inventory = xPlayer.getInventory and xPlayer.getInventory(true) or nil
+    end
 
     return {
         source = cache.source,
         identifier = cache.identifier,
         job = cache.job,
-        money = cache.money,
-        inventory = cache.inventory,
+        money = money,
+        inventory = inventory,
         isDead = cache.isDead
     }
 end)
 
 exports('GetInventory', function(src)
-    local cache = getPlayerCache(tonumber(src))
-    return cache and cache.inventory or {}
+    local xPlayer = getXPlayer(tonumber(src))
+    if not xPlayer or not xPlayer.getInventory then
+        return {}
+    end
+
+    return xPlayer.getInventory(true) or {}
 end)
 
 exports('HasItem', function(src, itemName, minCount)
     if not isValidString(itemName) then return false end
 
-    local cache = getPlayerCache(tonumber(src))
-    if not cache then return false end
+    local xPlayer = getXPlayer(tonumber(src))
+    if not xPlayer then return false end
 
     local needed = tonumber(minCount) or 1
-    local entry = cache.inventory[itemName]
+    local inventory = xPlayer.getInventory and xPlayer.getInventory(true) or {}
+    local entry = inventory[itemName]
     local count = entry and tonumber(entry.count) or 0
     return count >= needed
 end)
 
 exports('AddMoney', function(src, amount, account)
-    local cache = getPlayerCache(tonumber(src))
-    if not cache then return false end
-
     amount = math_floor(tonumber(amount) or 0)
     if amount <= 0 then return false end
 
@@ -593,20 +505,25 @@ exports('AddMoney', function(src, amount, account)
 end)
 
 exports('RemoveMoney', function(src, amount, account)
-    local cache = getPlayerCache(tonumber(src))
-    if not cache then return false end
-
     amount = math_floor(tonumber(amount) or 0)
     if amount <= 0 then return false end
 
     local accountName = account == 'money' and 'money' or 'bank'
-    local current = cache.money[accountName] or 0
+    local xPlayer = getXPlayer(tonumber(src))
+    if not xPlayer then return false end
+
+    local accounts = xPlayer.getAccounts and xPlayer.getAccounts() or {}
+    local current = 0
+    for i = 1, #accounts do
+        local accountEntry = accounts[i]
+        if accountEntry and accountEntry.name == accountName then
+            current = tonumber(accountEntry.money) or 0
+            break
+        end
+    end
     if current < amount then
         return false
     end
-
-    local xPlayer = getXPlayer(tonumber(src))
-    if not xPlayer then return false end
 
     xPlayer.removeAccountMoney(accountName, amount)
     return true
@@ -619,7 +536,8 @@ local CoreRequestHandlers = {}
 
 CoreRequestHandlers.getDeathStatus = function(src)
     local cache = getPlayerCache(src)
-    return cache and cache.isDead or false
+    if not cache then return false end
+    return ensureDeathStateLoaded(cache)
 end
 
 CoreRequestHandlers.getDynamicRespawnTimer = function(src)
@@ -649,11 +567,22 @@ CoreRequestHandlers.getDynamicRespawnTimer = function(src)
 end
 
 CoreRequestHandlers.checkBalance = function(src)
-    local cache = getPlayerCache(src)
-    if not cache then return false end
+    local xPlayer = getXPlayer(src)
+    if not xPlayer then return false end
 
     local amount = tonumber(Config.EarlyRespawnFineAmount) or 0
-    return ((cache.money.bank or 0) + (cache.money.money or 0)) >= amount
+    local bank, cash = 0, 0
+    local accounts = xPlayer.getAccounts and xPlayer.getAccounts() or {}
+    for i = 1, #accounts do
+        local account = accounts[i]
+        if account and account.name == 'bank' then
+            bank = tonumber(account.money) or 0
+        elseif account and account.name == 'money' then
+            cash = tonumber(account.money) or 0
+        end
+    end
+
+    return (bank + cash) >= amount
 end
 
 CoreRequestHandlers.hasItem = function(src, payload)
@@ -715,7 +644,9 @@ RegisterNetEvent('esx_ambulancejob:setDeathStatus', function(isDead)
     if not cache then return end
     if type(isDead) ~= 'boolean' then return end
 
+    cache.job = getPlayerJob(src)
     cache.isDead = isDead
+    cache.deathLoaded = true
     setCacheDirtyDeath(cache.identifier, isDead)
 end)
 
@@ -758,17 +689,28 @@ RegisterNetEvent('esx_ambulancejob:payFine', function()
     if not isValidSource(src) then return end
     if not canRunEvent(src, 'payFine') then return end
 
-    local cache = getPlayerCache(src)
-    if not cache then return end
+    local xPlayer = getXPlayer(src)
+    if not xPlayer then return end
 
     local amount = math_max(0, math_floor(tonumber(Config.EarlyRespawnFineAmount) or 0))
     if amount == 0 then return end
 
     withPlayerLock(src, function()
-        if (cache.money.bank or 0) >= amount then
-            exports[GetCurrentResourceName()]:RemoveMoney(src, amount, 'bank')
-        elseif (cache.money.money or 0) >= amount then
-            exports[GetCurrentResourceName()]:RemoveMoney(src, amount, 'money')
+        local bank, cash = 0, 0
+        local accounts = xPlayer.getAccounts and xPlayer.getAccounts() or {}
+        for i = 1, #accounts do
+            local account = accounts[i]
+            if account and account.name == 'bank' then
+                bank = tonumber(account.money) or 0
+            elseif account and account.name == 'money' then
+                cash = tonumber(account.money) or 0
+            end
+        end
+
+        if bank >= amount then
+            xPlayer.removeAccountMoney('bank', amount)
+        elseif cash >= amount then
+            xPlayer.removeAccountMoney('money', amount)
         end
     end)
 end)
@@ -814,17 +756,16 @@ RegisterNetEvent('esx_ambulancejob:removeItem', function(item)
     if not isValidSource(src) then return end
     if not canRunEvent(src, 'removeItem') then return end
 
-    local cache = getPlayerCache(src)
-    if not cache then return end
     if not isValidString(item) then return end
 
     withPlayerLock(src, function()
-        local entry = cache.inventory[item]
-        local currentCount = entry and tonumber(entry.count) or 0
-        if currentCount <= 0 then return end
-
         local xPlayer = getXPlayer(src)
         if not xPlayer then return end
+
+        local inventory = xPlayer.getInventory and xPlayer.getInventory(true) or {}
+        local entry = inventory[item]
+        local currentCount = entry and tonumber(entry.count) or 0
+        if currentCount <= 0 then return end
 
         xPlayer.removeInventoryItem(item, 1)
     end)
