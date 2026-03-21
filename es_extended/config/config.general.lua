@@ -39,7 +39,7 @@ Config.AdminGroups = {
     ["admin"] = true,
 }
 
--- เดิมอยู่ใน shared/config/adjustments.lua + client/modules/adjustments.lua (ลบแล้ว)
+-- เดิมอยู่ใน config/adjustments.lua + client/modules/adjustments.lua (ลบแล้ว)
 Config.DisableHealthRegeneration = true -- ปิดการฟื้นฟูพลังชีวิตอัตโนมัติ
 Config.EnablePVP = true -- อนุญาตให้ผู้เล่นต่อสู้กัน (friendly fire)
 
@@ -60,34 +60,49 @@ Config.DefaultItemLimit = -1 -- ค่าจำกัดสำรองเมื
 -- เมื่อ CustomInventory = false และเปิดระบบ pickup เดิมของ ESX (ฝั่ง client ลบแล้ว — ควรคง false)
 Config.EnablePickupSystem = false
 Config.PaycheckInterval = 7 * 60000 -- ระยะเวลาการรับเงินเดือน หน่วยเป็นมิลลิวินาที
--- 1000-player tuning: batch DB every 10-20s, no gameplay DB queries
-Config.SaveInterval = 15000 -- 15s default; use 10000-20000 for high-pop. Batch DB writes only.
-Config.SaveBatchSize = 1 -- Max 1-2 players per tick for stable resmon (~0.01 ms)
-Config.SaveBatchDelay = 8 -- 5-10 ms between jobs; prevents save spikes
-Config.CriticalMoneySaveThreshold = 50000 -- Immediate save when money delta >= threshold
-Config.CriticalRareItemDelta = 1 -- Immediate save for rare item delta >= threshold
-Config.CriticalSaveCooldownMs = 1500 -- Prevent immediate-save spam per player
-Config.ReconnectCooldownMs = 5000 -- Block rapid reconnects to reduce rollback races
-Config.SyncBatchSize = 8 -- Max players per tick for inventory/account sync
-Config.SyncBatchDelay = 10 -- ms between sync batches
-Config.ScopeBatchSize = 64 -- Players per tick when rebuilding scope cache
-Config.GCStepSize = 2048 -- collectgarbage("step") kB between batches; 0 = disabled
-Config.InventorySyncInterval = 750 -- Delta sync interval (ms)
-Config.InventorySyncRateLimit = 500 -- Min delay between syncs per player (ms)
+-- ปรับค่ารองรับเซิร์ฟเวอร์ 1000 คน: เขียนฐานข้อมูลเป็นชุดทุก 10-20 วินาที และไม่ยิงคิวรี DB ในเส้นทางเกมเพลย์หลัก
+Config.SaveInterval = 15000 -- ค่าเริ่มต้น 15 วินาที; เซิร์ฟเวอร์คนเยอะควรใช้ 10000-20000 และให้บันทึกฐานข้อมูลแบบเป็นชุดเท่านั้น
+Config.SaveBatchSize = 1 -- จำนวนผู้เล่นสูงสุดที่บันทึกต่อหนึ่งรอบ ควรอยู่ราว 1-2 คนเพื่อให้ resmon นิ่ง (~0.01 ms)
+Config.SaveBatchDelay = 8 -- หน่วง 5-10 มิลลิวินาทีระหว่างแต่ละงานบันทึก เพื่อกันโหลดพุ่งเป็นช่วง
+Config.CriticalMoneySaveThreshold = 50000 -- บันทึกทันทีเมื่อเงินเปลี่ยนแปลงมากกว่าหรือเท่ากับค่านี้
+Config.CriticalRareItemDelta = 1 -- บันทึกทันทีเมื่อจำนวนไอเท็มแรร์เปลี่ยนแปลงมากกว่าหรือเท่ากับค่านี้
+Config.CriticalSaveCooldownMs = 1500 -- ป้องกันการสั่งบันทึกทันทีถี่เกินไปต่อผู้เล่นหนึ่งคน
+Config.ReconnectCooldownMs = 5000 -- บล็อกการรีคอนเน็กต์ถี่เกินไปเพื่อลดความเสี่ยงจากข้อมูลย้อนกลับหรือการ rollback
+Config.SyncBatchSize = 8 -- จำนวนผู้เล่นสูงสุดที่ซิงก์ข้อมูลบัญชีและกระเป๋าในหนึ่งรอบ
+Config.SyncBatchDelay = 10 -- ระยะหน่วงระหว่างแต่ละชุดซิงก์ หน่วยเป็นมิลลิวินาที
+Config.ScopeBatchSize = 64 -- จำนวนผู้เล่นที่ประมวลผลต่อรอบตอนสร้าง scope cache ใหม่
+Config.GCStepSize = 2048 -- ขนาดหน่วยความจำ (กิโลไบต์) ที่ให้ collectgarbage("step") ทำงานระหว่างแต่ละชุด; 0 = ปิดใช้งาน
+Config.InventorySyncInterval = 750 -- ช่วงเวลาการซิงก์เฉพาะข้อมูลที่เปลี่ยนแปลงของกระเป๋า หน่วยเป็นมิลลิวินาที
+Config.InventorySyncRateLimit = 500 -- ระยะห่างขั้นต่ำระหว่างการซิงก์ของผู้เล่นแต่ละคน หน่วยเป็นมิลลิวินาที
+Config.InventoryActionRateLimit = 20 -- จำนวนการเปลี่ยนแปลงกระเป๋าสูงสุดของผู้เล่นต่อหนึ่งช่วงเวลาที่กำหนด
+Config.InventoryRateWindowMs = 1000 -- ช่วงเวลาสำหรับคำนวณ rate limit ของการเปลี่ยนแปลงกระเป๋า หน่วยเป็นมิลลิวินาที
+Config.InventoryRateBlockMs = 3000 -- ระยะเวลาบล็อกชั่วคราวเมื่อมีการยิงคำสั่งเกิน rate limit หน่วยเป็นมิลลิวินาที
+Config.InventoryMaxActionCount = 100 -- จำนวนไอเท็มที่อนุญาตให้เพิ่มหรือลดได้สูงสุดต่อหนึ่งคำสั่ง
+Config.InventoryMaxSetCount = 10000 -- จำนวนไอเท็มรวมสูงสุดที่ยอมรับได้จากคำสั่ง setInventoryItem
+Config.InventoryQueueMaxSize = 128 -- จำนวนคำสั่งกระเป๋าที่รอในคิวได้สูงสุดต่อผู้เล่นหนึ่งคน
+Config.InventoryQueueProcessBatchSize = 16 -- จำนวนคำสั่งกระเป๋าสูงสุดที่ประมวลผลต่อหนึ่ง tick ของ worker เพื่อกันอาการกระตุกเวลาเกิด burst
+Config.InventoryLogFlushInterval = 500 -- ช่วงเวลาส่ง log กระเป๋าแบบ async ออกจากคิว หน่วยเป็นมิลลิวินาที
+Config.InventoryLogBatchSize = 128 -- จำนวน log กระเป๋าแบบ async สูงสุดที่ส่งออกต่อหนึ่งชุด
+Config.InventoryLogQueueMaxSize = 512 -- จำนวน log กระเป๋าที่รอคิวได้สูงสุดก่อนเริ่มทิ้งรายการใหม่เพื่อลดการกินหน่วยความจำ
+Config.InventoryLogMode = "suspicious" -- โหมดการเก็บ log กระเป๋า: off = ปิด, suspicious = เก็บเฉพาะเหตุผิดปกติ, all = เก็บทุก mutation
+Config.InventorySuspicionThreshold = 3 -- ค่าขีดเริ่มต้นสำหรับมองว่าแพทเทิร์นการแก้กระเป๋าน่าสงสัย
 Config.LoginQueueInterval = 1000 -- ช่วงเวลาประมวลผลคิวเข้าสู่ระบบ หน่วยเป็นมิลลิวินาที
 Config.LoginQueueBatchSize = 4 -- จำนวนผู้เล่นสูงสุดที่ประมวลผลจากคิวต่อรอบ
 Config.PaycheckChunkSize = 32 -- จำนวนผู้เล่นที่ประมวลผลต่อหนึ่งชุดของการจ่ายเงินเดือน
 Config.PaycheckChunkDelay = 50 -- ระยะเวลาหน่วงระหว่างแต่ละชุดการจ่ายเงินเดือน หน่วยเป็นมิลลิวินาที
--- Client CPU: one unified tick (ped + vehicle + weapon + pause). Higher = lower resmon (may feel slightly less snappy).
+-- ลดภาระ CPU ฝั่ง client ด้วยลูปหลักชุดเดียว (ped + vehicle + weapon + pause) ยิ่งค่าสูง resmon ยิ่งต่ำ แต่การตอบสนองอาจช้าลงเล็กน้อย.
 Config.ClientActionLoopInterval = 2500
-Config.PedLoopInterval = 2500 -- legacy alias; prefer ClientActionLoopInterval
+Config.PedLoopInterval = 2500 -- ชื่อคอนฟิกเดิมเพื่อความเข้ากันได้ย้อนหลัง; แนะนำให้ใช้ ClientActionLoopInterval แทน
 Config.SlowLoopInterval = 2500
-Config.EnablePlayerSyncLookAt = false -- NetworkSetLocalPlayerSyncLookAt — small cost; off for minimal resmon
-Config.ClientStatebagCoordsInterval = 8000 -- Push coords interval (ms); larger = less Lua/native work
-Config.ClientStatebagCoordsMinMove = 4.0 -- Meters before pushing again (fewer statebag writes)
-Config.PlayerScopeBucketSize = 128.0 -- Spatial bucket size for scope
-Config.PlayerScopeRefreshInterval = 2000 -- 2s when using client statebag coords; server loop disabled for event-driven
-Config.UseClientStatebagCoords = true -- Clients push coords to statebag; no server position loop (1000-player)
+Config.EnablePlayerSyncLookAt = false -- ตัวเลือก NetworkSetLocalPlayerSyncLookAt มีต้นทุนเล็กน้อย; ปิดไว้เพื่อลด resmon ให้ต่ำที่สุด
+Config.ClientStatebagCoordsInterval = 8000 -- ช่วงเวลาที่ client ส่งพิกัดเข้า statebag หน่วยเป็นมิลลิวินาที; ค่ายิ่งมาก งาน Lua/native ยิ่งน้อย
+Config.ClientStatebagCoordsMinMove = 4.0 -- ผู้เล่นต้องขยับอย่างน้อยกี่เมตรก่อนส่งพิกัดใหม่อีกครั้ง เพื่อลดจำนวนการเขียน statebag
+Config.PlayerScopeBucketSize = 128.0 -- ขนาดพื้นที่ของ bucket ที่ใช้แบ่ง scope ผู้เล่น
+Config.ScopeDirtyFlushInterval = 250 -- ช่วงเวลาประมวลผลงาน scope incremental ที่ค้างอยู่ หน่วยเป็นมิลลิวินาที
+Config.PlayerScopeRefreshInterval = 2000 -- ค่าความเข้ากันได้ย้อนหลังสำหรับโหมด fallback ที่ยังใช้ลูปรีเฟรช scope แบบเดิม
+Config.PlayerScopeFullRefreshInterval = 15000 -- ช่วงเวลาสแกน scope ทั้งระบบเพื่อซ่อมข้อมูลตกหล่น หน่วยเป็นมิลลิวินาที
+Config.ScopeDirtyBatchSize = 128 -- จำนวนผู้เล่นสูงสุดที่อัปเดต scope แบบ incremental ต่อหนึ่งรอบ
+Config.UseClientStatebagCoords = true -- ให้ client ส่งพิกัดเข้า statebag โดยตรง และไม่ต้องมีลูปอ่านตำแหน่งฝั่งเซิร์ฟเวอร์ เหมาะกับเซิร์ฟเวอร์คนเยอะ
 Config.EventThrottle = {
     giveItem = 300,
     removeInventory = 300,

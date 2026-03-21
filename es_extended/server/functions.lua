@@ -205,10 +205,10 @@ function ESX.RegisterCommand(name, group, cb, allowConsole, suggestion)
 
     if type(group) == "table" then
         for _, v in ipairs(group) do
-            ExecuteCommand(("add_ace group.%s command.%s allow"):format(v, name))
+            Core.Services.Ace.allowCommand(v, name)
         end
     else
-        ExecuteCommand(("add_ace group.%s command.%s allow"):format(group, name))
+        Core.Services.Ace.allowCommand(group, name)
     end
 end
 
@@ -494,8 +494,8 @@ function Core.SavePlayers(cb)
         return cb and cb(true)
     end
 
-    local batchSize = math.min(2, math.max(1, Config.SaveBatchSize or 1))
-    local batchDelay = math.max(5, math.min(10, Config.SaveBatchDelay or 8))
+    local batchSize = Core.Config.Save.batchSize()
+    local batchDelay = Core.Config.Save.batchDelay()
     local totalSaved = 0
 
     local function processBatch(startIndex)

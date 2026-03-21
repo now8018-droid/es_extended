@@ -8,20 +8,21 @@ version '1.13.4'
 shared_scripts {
 	'locale.lua',
 
-	'shared/config/main.lua',
-    'shared/config/addon_weapons.lua',
-	'shared/config/weapons.lua',
+	'config/config.general.lua',
+    'config/config.addonweapon.lua',
+	'config/config.weapons.lua',
 
-    'shared/main.lua',
-    'shared/functions.lua',
-    'shared/modules/*.lua',
+    'common/main.lua',
+    'common/functions.lua',
+    'common/modules/*.lua',
 }
 
 server_scripts {
 	'@oxmysql/lib/MySQL.lua',
-    'shared/config/logs.lua',
+    'config/config.discordlog.lua',
 
 	'server/common.lua',
+	'server/services/*.lua',
 	'server/modules/callback.lua',
 	'server/classes/player.lua',
 	'server/classes/vehicle.lua',
