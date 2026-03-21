@@ -84,6 +84,20 @@ $(function () {
             } else {
                 display(false)
             }
+        } else if (item.type === "blockzone") {
+            if (item.status == true) {
+                display(true)
+                $('.title_show').html('You are in a restricted zone. Only body clear / force respawn are available')
+                $('#signal').addClass('cooldown')
+                $('#requesttalk').addClass('cooldown')
+                $('#gang').addClass('cooldown')
+                $('.display_dead_screen').removeClass('spawn_time')
+            } else {
+                $('.title_show').html('You are incapacitated. Please wait for emergency service')
+                $('#signal').removeClass('cooldown')
+                $('#requesttalk').removeClass('cooldown')
+                $('#gang').removeClass('cooldown')
+            }
         } else if (item.type === "addclass") {
             // console.log('[DEBUG] NUI addclass:', item.status, $('#clearped')[0]);
             if (item.status == true) {
