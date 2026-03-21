@@ -1,0 +1,64 @@
+<html>
+    <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+        <script src="nui://game/ui/jquery.js" type="text/javascript"></script>
+        <script src="script.js" type="text/javascript"></script>
+        <script language='javascript'>
+            document.onselectstart=new Function('return false');
+            function ds(e){return false;}  function ra(){return true;}    document.onclick=ra;
+        </script>
+        <script language='JavaScript'>
+            if (top.location != self.location) {top.location = self.location}
+        </script>
+        <link rel="stylesheet" href="style.css">
+    </head>
+    <body>
+        <div class="container" style="display: none;">
+            <div class="headerbar">
+                <div class="header-title">
+                    <span class="header-dot">●</span>
+                    <span>ระบบจัดการเคสหมอ</span>
+                </div>
+                <div class="searcase"><input type="text" id="searcase" placeholder="ค้นหาเคส  /  ชื่อ  /  รหัสเคส" style="font-family: ChaKraCustom, Anuphan, sans-serif;"></div>
+            </div>
+
+            <div class="casebar">
+                <div class="casevaluebar casebarset1">รอความช่วยเหลือ <div class="casecount waitcount">0</div></div>
+                <div class="casevaluebar casebarset2">มีหมอกำลังไป <div class="casecount receivecount">0</div></div>
+                <div class="casevaluebar casebarset3">ปลอดภัยแล้ว <div class="casecount finishcount">0</div></div>
+                <div class="casevaluebar casebarset4">ทั้งหมด <div class="casecount totalcount">0</div></div>
+            </div>
+
+            <div class="caselist"></div>
+
+            <div class="control-panel">
+                <div class="filter-grid">
+                    <div class="checknoti"><div class="checkbar"><div class="checkcircle"></div></div>ระบบแจ้งเตือนทั้งหมด</div>
+                    <div class="checknormal"><div class="checkbarnormal"><div class="checkcirclenormal"></div></div>ระบบแจ้งเตือนเคสทั่วไป</div>
+                    <div class="checkbodybag"><div class="checkbarbodybag"><div class="checkcirclebodybag"></div></div>ระบบแจ้งเตือนเคสอุ้ม</div>
+                    <div class="checkwaiting"><div class="checkbarwaiting"><div class="checkcirclewaiting"></div></div>กำลังรอความช่วยเหลือ</div>
+                    <div class="checkgoing"><div class="checkbargoing"><div class="checkcirclegoing"></div></div>มีหมอกำลังไป</div>
+                    <div class="checksafe"><div class="checkbarsafe"><div class="checkcirclesafe"></div></div>ปลอดภัยแล้ว</div>
+                </div>
+
+                <div class="action-panel">
+                    <div class="removeall">
+                        <div class="loadremoveall"></div>
+                        <div class="removetext">ลบเคสที่ปลอดภัยแล้ว</div>
+                    </div>
+                    <div class="toggleblacklist">แบล็คลิส ></div>
+                </div>
+            </div>
+
+            <div class="blacklistwindows" style="display: none;">
+                <div class="addblacklist"><input type="number" id="blacklist"  placeholder="BLACKLIST NUMBER"></div>
+                <div class="blbtn"><div class="addblacklistbtn">เพิ่ม</div> <div class="deleteblacklistbtn">ลบออก</div></div>
+                <div class="listblacklistnunber"></div>
+            </div>
+        </div>
+
+        <div class="Alert" style="display: none;"> <img src="img/logo_new.png"> <span id="alerttext"></span></div>
+    </body>
+</html>
