@@ -320,14 +320,22 @@ local ZONE_DETECTION = Config.ZoneDetection
 
 -- Cache สำหรับประสิทธิภาพ
 local ZONE_PRIORITY = {"training", "airdrop", "stelshop", "replight", "waterpipe", "megacement"}
+local LastSyncedDeathRemainState = false
 
 setDeathRemainState = function(seconds)
+    local nextValue = nil
     local sec = tonumber(seconds)
+
     if sec and sec >= 0 then
-        LocalPlayer.state:set('ambulanceRespawnRemain', math.ceil(sec), true)
-    else
-        LocalPlayer.state:set('ambulanceRespawnRemain', nil, true)
+        nextValue = math.ceil(sec)
     end
+
+    if LastSyncedDeathRemainState == nextValue then
+        return
+    end
+
+    LastSyncedDeathRemainState = nextValue
+    LocalPlayer.state:set('ambulanceRespawnRemain', nextValue, true)
 end
 
 getDeathKey = function(name, fallback)

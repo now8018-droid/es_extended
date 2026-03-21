@@ -16,6 +16,16 @@ local ScriptProp		= {}
 local AlertData			= {}
 local ScriptEntity		= {}
 local AlertCaseIndexMap	= {}
+local CachedJobName		= nil
+
+local function syncCachedJob(jobName)
+	if not jobName or jobName == CachedJobName then
+		return
+	end
+
+	CachedJobName = jobName
+	TriggerServerEvent(scriptName..':cacheJob', jobName)
+end
 
 Citizen.CreateThread(function()
 	while ESX == nil do
@@ -28,7 +38,7 @@ Citizen.CreateThread(function()
 	end
     ESX.PlayerData = ESX.GetPlayerData()
 	if ESX.PlayerData and ESX.PlayerData.job and ESX.PlayerData.job.name then
-		TriggerServerEvent(scriptName..':cacheJob', ESX.PlayerData.job.name)
+		syncCachedJob(ESX.PlayerData.job.name)
 	end
     ScriptWork()
 end)
@@ -36,7 +46,7 @@ end)
 RegisterNetEvent('esx:setJob')
 AddEventHandler('esx:setJob', function(job)
 	if job and job.name then
-		TriggerServerEvent(scriptName..':cacheJob', job.name)
+		syncCachedJob(job.name)
 	end
 end)
 
