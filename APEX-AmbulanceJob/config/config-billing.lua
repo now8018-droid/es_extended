@@ -1,0 +1,24 @@
+Config.BillingMenu = Config.BillingMenu or {}
+
+Config.BillingMenu.Revive = {
+    { label = 'ชุบชีวิตทั่วไป', value = 1000 },
+    { label = 'ชุบนอกเมือง', value = 1500 },
+    { label = 'ชุบเมืองบน', value = 2000 },
+    { label = 'ชุบพื้นที่เข้าถึงยาก', value = 3000 },
+    { label = 'ชุบทั้งหมดพื้นที่สุ่มเสี่ยง', value = 4000 },
+}
+
+Config.BillingMenu.Heal = {
+    single = { label = 'ฉีดยาเดี่ยว', value = 500 },
+    mass = { label = 'ฉีดยาหมู่', value = 500 },
+}
+
+Config.BillingMenu.ReviveSelectRadius = 3.0 -- ระยะสำหรับเมนูเลือกชุบ (เมตร) และวง Marker รอบตัวหมอ
+Config.BillingMenu.HealSelectRadius = 3.0 -- ระยะสำหรับเมนูเลือกฉีดยา (เมตร) และวง Marker รอบตัวหมอ
+
+
+Config.BillingMenu.Manual = {
+    { label = 'ค่าบริการทั่วไป', value = 500 },
+    { label = 'ค่าปฐมพยาบาลหน้างาน', value = 1000 },
+    { label = 'ค่าช่วยเหลือนอกพื้นที่', value = 1500 }
+}
