@@ -123,6 +123,25 @@ local DeathInputRuntime = {
     respawnPromptVisible = false,
 }
 
+local BLOCK_ZONE_UPDATE_MS_DEAD = 150
+local BLOCK_ZONE_UPDATE_MS_ALIVE = 1000
+local BlockZoneRuntime = {
+    zones = {},
+    isInside = false,
+    lastUpdate = 0
+}
+
+for i = 1, #(Config.BlockZone or {}) do
+    local zone = Config.BlockZone[i]
+    if zone and zone.coords then
+        local radius = tonumber(zone.radius) or 0.0
+        BlockZoneRuntime.zones[#BlockZoneRuntime.zones + 1] = {
+            coords = zone.coords,
+            radiusSq = radius * radius
+        }
+    end
+end
+
 local handleClearBodyInput
 local handleRequestTalkInput
 local handleDistressInput
@@ -822,7 +841,7 @@ function OnPlayerDeath()
     end)
     
     SetTimeout(Config.DeathUIDelay, function()
-        if IsInBlockZone() then
+        if IsInBlockZone(true) then
             -- ส่ง NUI แจ้งว่าอยู่ BlockZone โดยไม่เปิด keymap
             SendNUIMessage({
                 type = 'blockzone',
@@ -1550,20 +1569,48 @@ if Config.LoadIpl then
 	end)
 end
 
-function IsInBlockZone()
+local function refreshBlockZoneState(forceRefresh)
+    local now = GetGameTimer()
+    local refreshMs = IsDead and BLOCK_ZONE_UPDATE_MS_DEAD or BLOCK_ZONE_UPDATE_MS_ALIVE
+
+    if not forceRefresh and (now - BlockZoneRuntime.lastUpdate) < refreshMs then
+        return BlockZoneRuntime.isInside
+    end
+
     local playerPed = PlayerPedId()
+    if not playerPed or not DoesEntityExist(playerPed) then
+        return BlockZoneRuntime.isInside
+    end
+
     local playerCoords = GetEntityCoords(playerPed)
-    for _, zone in pairs(Config.BlockZone) do
+    local isInside = false
+
+    for i = 1, #BlockZoneRuntime.zones do
+        local zone = BlockZoneRuntime.zones[i]
         local dx = playerCoords.x - zone.coords.x
         local dy = playerCoords.y - zone.coords.y
         local dz = playerCoords.z - zone.coords.z
-        local radius = zone.radius or 0.0
-        if (dx * dx + dy * dy + dz * dz) <= (radius * radius) then
-            return true
+        if (dx * dx + dy * dy + dz * dz) <= zone.radiusSq then
+            isInside = true
+            break
         end
     end
-    return false
+
+    BlockZoneRuntime.isInside = isInside
+    BlockZoneRuntime.lastUpdate = now
+    return isInside
 end
+
+function IsInBlockZone(forceRefresh)
+    return refreshBlockZoneState(forceRefresh)
+end
+
+Citizen.CreateThread(function()
+    while true do
+        refreshBlockZoneState(true)
+        Citizen.Wait(IsDead and BLOCK_ZONE_UPDATE_MS_DEAD or BLOCK_ZONE_UPDATE_MS_ALIVE)
+    end
+end)
 
 local NuiStateCache = {
     uiVisible = nil,
