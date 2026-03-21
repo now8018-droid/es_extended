@@ -25,6 +25,7 @@ local GetGameTimer = GetGameTimer
 local GetPlayerPed = GetPlayerPed
 local GetEntityCoords = GetEntityCoords
 local GetPlayerName = GetPlayerName
+local GetPlayerPing = GetPlayerPing
 local TriggerClientEvent = TriggerClientEvent
 local RegisterNetEvent = RegisterNetEvent
 local AddEventHandler = AddEventHandler
@@ -33,6 +34,7 @@ local Wait = Wait
 local math_floor = math.floor
 local math_max = math.max
 local math_min = math.min
+local math_abs = math.abs
 local tonumber = tonumber
 local type = type
 local pairs = pairs
@@ -43,7 +45,7 @@ local table_concat = table.concat
 -- ------------------------------------------------------------------
 -- Runtime systems
 -- ------------------------------------------------------------------
-local PLAYER_CACHE = {} -- [src] = { source, identifier, job, money, inventory, isDead, xPlayer }
+local PLAYER_CACHE = {} -- [src] = { source, identifier, job, money, inventory, isDead }
 local PLAYER_PEDS = {}  -- [src] = ped handle
 local PLAYER_STATE = {} -- [src] = { requestLimiter, actionCooldowns }
 local JOB_INDEX = {}    -- [jobName] = { [src] = true }
@@ -249,7 +251,6 @@ local function createPlayerCache(src, xPlayer)
         money = buildMoneyMap(xPlayer),
         inventory = xPlayer.getInventory and xPlayer.getInventory(true) or {},
         isDead = (xPlayer.get('isDead') or xPlayer.get('dead')) and true or false,
-        xPlayer = xPlayer,
     }
 
     PLAYER_CACHE[src] = cache
@@ -278,16 +279,43 @@ local function getPlayerCache(src)
     return createPlayerCache(src, xPlayer)
 end
 
-local function updateMoneyCache(cache)
-    local xPlayer = cache and cache.xPlayer
-    if not xPlayer then return end
-    cache.money = buildMoneyMap(xPlayer)
+local function getXPlayer(src)
+    if not isValidSource(src) then return nil end
+    return ESX.GetPlayerFromId(src)
 end
 
-local function updateInventoryCache(cache)
-    local xPlayer = cache and cache.xPlayer
-    if not xPlayer then return end
-    cache.inventory = xPlayer.getInventory and xPlayer.getInventory(true) or {}
+local function setMoneyCache(cache, accountName, amount)
+    if not cache or not isValidString(accountName) then return end
+    cache.money[accountName] = math_max(0, math_floor(tonumber(amount) or 0))
+end
+
+local function adjustMoneyCache(cache, accountName, delta)
+    if not cache or not isValidString(accountName) then return end
+    local current = tonumber(cache.money[accountName]) or 0
+    cache.money[accountName] = math_max(0, current + (tonumber(delta) or 0))
+end
+
+local function setInventoryCount(cache, itemName, count)
+    if not cache or not isValidString(itemName) then return end
+
+    local nextCount = math_max(0, math_floor(tonumber(count) or 0))
+    local current = cache.inventory[itemName]
+
+    if nextCount <= 0 then
+        cache.inventory[itemName] = nil
+        return
+    end
+
+    if current then
+        current.count = nextCount
+        return
+    end
+
+    cache.inventory[itemName] = {
+        name = itemName,
+        count = nextCount,
+        label = itemName,
+    }
 end
 
 local function setCacheDirtyDeath(identifier, isDead)
@@ -312,7 +340,7 @@ end
 local function cleanupRuntimeCaches()
     -- cleanup stale memory for disconnected players (defensive)
     for src, _ in pairs(PLAYER_CACHE) do
-        if not ESX.GetPlayerFromId(src) then
+        if GetPlayerPing(src) <= 0 then
             PLAYER_CACHE[src] = nil
             PLAYER_PEDS[src] = nil
             PLAYER_STATE[src] = nil
@@ -364,8 +392,8 @@ local function getOnlineAmbulanceCount()
     if not bucket then return 0 end
 
     local count = 0
-    for src, _ in pairs(bucket) do
-        if PLAYER_CACHE[src] or ESX.GetPlayerFromId(src) then
+    for src in pairs(bucket) do
+        if PLAYER_CACHE[src] and GetPlayerPing(src) > 0 then
             count = count + 1
         end
     end
@@ -467,8 +495,6 @@ RegisterNetEvent('esx:playerLoaded', function(playerId, xPlayer)
         end
         local isDead = tonumber(value) == 1
         cache.isDead = isDead
-        resolvedXPlayer.set('isDead', isDead)
-        resolvedXPlayer.set('dead', isDead)
     end
 end)
 
@@ -485,6 +511,36 @@ RegisterNetEvent('esx:setJob', function(playerId, job)
     cache.job = job
 
     setPlayerJobIndex(src, oldJobName, newJobName)
+end)
+
+AddEventHandler('esx:setAccountMoney', function(playerId, accountName, money)
+    local cache = getPlayerCache(tonumber(playerId))
+    if not cache then return end
+    setMoneyCache(cache, accountName, money)
+end)
+
+AddEventHandler('esx:addAccountMoney', function(playerId, accountName, money)
+    local cache = getPlayerCache(tonumber(playerId))
+    if not cache then return end
+    adjustMoneyCache(cache, accountName, money)
+end)
+
+AddEventHandler('esx:removeAccountMoney', function(playerId, accountName, money)
+    local cache = getPlayerCache(tonumber(playerId))
+    if not cache then return end
+    adjustMoneyCache(cache, accountName, -math_abs(tonumber(money) or 0))
+end)
+
+AddEventHandler('esx:onAddInventoryItem', function(playerId, itemName, itemCount)
+    local cache = getPlayerCache(tonumber(playerId))
+    if not cache then return end
+    setInventoryCount(cache, itemName, itemCount)
+end)
+
+AddEventHandler('esx:onRemoveInventoryItem', function(playerId, itemName, itemCount)
+    local cache = getPlayerCache(tonumber(playerId))
+    if not cache then return end
+    setInventoryCount(cache, itemName, itemCount)
 end)
 
 -- ------------------------------------------------------------------
@@ -529,8 +585,10 @@ exports('AddMoney', function(src, amount, account)
     if amount <= 0 then return false end
 
     local accountName = account == 'money' and 'money' or 'bank'
-    cache.xPlayer.addAccountMoney(accountName, amount)
-    updateMoneyCache(cache)
+    local xPlayer = getXPlayer(tonumber(src))
+    if not xPlayer then return false end
+
+    xPlayer.addAccountMoney(accountName, amount)
     return true
 end)
 
@@ -547,8 +605,10 @@ exports('RemoveMoney', function(src, amount, account)
         return false
     end
 
-    cache.xPlayer.removeAccountMoney(accountName, amount)
-    updateMoneyCache(cache)
+    local xPlayer = getXPlayer(tonumber(src))
+    if not xPlayer then return false end
+
+    xPlayer.removeAccountMoney(accountName, amount)
     return true
 end)
 
@@ -656,8 +716,6 @@ RegisterNetEvent('esx_ambulancejob:setDeathStatus', function(isDead)
     if type(isDead) ~= 'boolean' then return end
 
     cache.isDead = isDead
-    cache.xPlayer.set('isDead', isDead)
-    cache.xPlayer.set('dead', isDead)
     setCacheDirtyDeath(cache.identifier, isDead)
 end)
 
@@ -744,8 +802,10 @@ RegisterNetEvent('esx_ambulancejob:giveItem', function(item, count)
     if not isValidString(item) or amount <= 0 or amount > 100 then return end
 
     withPlayerLock(src, function()
-        cache.xPlayer.addInventoryItem(item, amount)
-        updateInventoryCache(cache)
+        local xPlayer = getXPlayer(src)
+        if not xPlayer then return end
+
+        xPlayer.addInventoryItem(item, amount)
     end)
 end)
 
@@ -759,11 +819,14 @@ RegisterNetEvent('esx_ambulancejob:removeItem', function(item)
     if not isValidString(item) then return end
 
     withPlayerLock(src, function()
-        local invItem = cache.xPlayer.getInventoryItem(item)
-        if invItem and (tonumber(invItem.count) or 0) > 0 then
-            cache.xPlayer.removeInventoryItem(item, 1)
-            updateInventoryCache(cache)
-        end
+        local entry = cache.inventory[item]
+        local currentCount = entry and tonumber(entry.count) or 0
+        if currentCount <= 0 then return end
+
+        local xPlayer = getXPlayer(src)
+        if not xPlayer then return end
+
+        xPlayer.removeInventoryItem(item, 1)
     end)
 end)
 
@@ -780,8 +843,10 @@ RegisterNetEvent('esx_ambulancejob:addExp', function(typeItem, count)
 
     local itemName = Config.ItemExp
     if itemName and Config.AddItemEXP then
-        Config.AddItemEXP(typeItem, cache.xPlayer, itemName, n)
-        updateInventoryCache(cache)
+        local xPlayer = getXPlayer(src)
+        if not xPlayer then return end
+
+        Config.AddItemEXP(typeItem, xPlayer, itemName, n)
     end
 end)
 
