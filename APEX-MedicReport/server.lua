@@ -6,6 +6,8 @@ local DefaultCaseRemainSeconds = (Config and Config["DefaultCaseRemainSeconds"])
 local CaseOrderCounter = 0
 local MedicActiveCase = {}
 local AmbulancePlayers = {}
+local AmbulanceCacheLastCleanup = 0
+local AmbulanceCacheCleanupIntervalMs = 30000
 
 local function setAmbulancePlayer(playerId, isAmbulance)
     local pid = tonumber(playerId)
@@ -15,6 +17,26 @@ local function setAmbulancePlayer(playerId, isAmbulance)
         AmbulancePlayers[pid] = true
     else
         AmbulancePlayers[pid] = nil
+    end
+end
+
+local function cleanupAmbulanceCache(force)
+    local now = GetGameTimer()
+    if not force and (now - AmbulanceCacheLastCleanup) < AmbulanceCacheCleanupIntervalMs then
+        return
+    end
+
+    AmbulanceCacheLastCleanup = now
+
+    for playerId in pairs(AmbulancePlayers) do
+        if GetPlayerPing(playerId) <= 0 then
+            AmbulancePlayers[playerId] = nil
+        elseif ESX ~= nil then
+            local xPlayer = ESX.GetPlayerFromId(playerId)
+            if not xPlayer or not xPlayer.job or xPlayer.job.name ~= 'ambulance' then
+                AmbulancePlayers[playerId] = nil
+            end
+        end
     end
 end
 
@@ -86,10 +108,11 @@ local function getRealRespawnRemainSeconds(source)
 end
 
 local function eachAmbulance(cb)
-    for playerId, _ in pairs(AmbulancePlayers) do
-        local xPlayer = ESX.GetPlayerFromId(playerId)
-        if xPlayer and xPlayer.job and xPlayer.job.name == 'ambulance' then
-            cb(playerId, xPlayer)
+    cleanupAmbulanceCache(false)
+
+    for playerId in pairs(AmbulancePlayers) do
+        if GetPlayerPing(playerId) > 0 then
+            cb(playerId)
         else
             AmbulancePlayers[playerId] = nil
         end
@@ -497,9 +520,7 @@ AddEventHandler('esx:playerLoaded', function(playerId)
     setAmbulancePlayer(playerId, true)
 
     TriggerClientEvent(scriptName .. ':RefreshBlackList', playerId, PhoneBlackList)
-    for _, caseData in ipairs(AlertCases) do
-        TriggerClientEvent(scriptName .. ':AddMedicCase', playerId, caseData, false)
-    end
+    TriggerClientEvent(scriptName .. ':SyncCases', playerId, AlertCases)
 end)
 
 AddEventHandler('esx:setJob', function(sourceId, job, _lastJob)

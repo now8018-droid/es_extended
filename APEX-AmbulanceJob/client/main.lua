@@ -16,6 +16,39 @@ IsDead = false
 
 ESX = nil
 
+local function ensureESX()
+    if ESX == nil then
+        local ok, shared = pcall(function()
+            return exports['es_extended']:getSharedObject()
+        end)
+
+        if ok then
+            ESX = shared
+        end
+    end
+
+    return ESX
+end
+
+local function getPlayerJobState()
+    local state = LocalPlayer and LocalPlayer.state
+    local job = state and state.job
+    if type(job) == 'table' and job.name then
+        return job
+    end
+
+    return nil
+end
+
+local function roundNumber(value)
+    local n = tonumber(value) or 0
+    if n >= 0 then
+        return math.floor(n + 0.5)
+    end
+
+    return math.ceil(n - 0.5)
+end
+
 local CoreRequestId = 0
 local CorePendingRequests = {}
 local CorePendingKeys = {}
@@ -107,7 +140,10 @@ local function showNotify(text, notifyType, notifyTime)
     end)
 
     if not ok then
-        ESX.ShowNotification(text)
+        local esx = ensureESX()
+        if esx and esx.ShowNotification then
+            esx.ShowNotification(text)
+        end
     end
 end
 
@@ -239,12 +275,11 @@ local function triggerDeathActionCooldown(actionName, durationMs)
 end
 
 Citizen.CreateThread(function()
-	while ESX == nil do
-        ESX = exports['es_extended']:getSharedObject()
+	while not NetworkIsPlayerActive(PlayerId()) do
         Citizen.Wait(100)
     end
 
-	while ESX.PlayerData == nil or ESX.PlayerData.job == nil do
+	while getPlayerJobState() == nil do
 		Citizen.Wait(100)
 	end
 
@@ -253,22 +288,7 @@ Citizen.CreateThread(function()
 	closeUi()
 end)
 
-RegisterNetEvent('esx:playerLoaded')
-AddEventHandler('esx:playerLoaded', function(xPlayer)
-	Wait(2000)
-	ESX.PlayerData = xPlayer
-	PlayerLoaded = true
-	closeUi()
-end)
-
-RegisterNetEvent('esx:setJob')
-AddEventHandler('esx:setJob', function(job)
-	if ESX.PlayerData then
-		ESX.PlayerData.job = job
-	end
-end)
-
-AddEventHandler('esx:onPlayerSpawn', function()
+AddEventHandler('playerSpawned', function()
 	while not PlayerLoaded do Wait(250) end
 	Wait(500)
 
@@ -320,14 +340,22 @@ local ZONE_DETECTION = Config.ZoneDetection
 
 -- Cache สำหรับประสิทธิภาพ
 local ZONE_PRIORITY = {"training", "airdrop", "stelshop", "replight", "waterpipe", "megacement"}
+local LastSyncedDeathRemainState = false
 
 setDeathRemainState = function(seconds)
+    local nextValue = nil
     local sec = tonumber(seconds)
+
     if sec and sec >= 0 then
-        LocalPlayer.state:set('ambulanceRespawnRemain', math.ceil(sec), true)
-    else
-        LocalPlayer.state:set('ambulanceRespawnRemain', nil, true)
+        nextValue = math.ceil(sec)
     end
+
+    if LastSyncedDeathRemainState == nextValue then
+        return
+    end
+
+    LastSyncedDeathRemainState = nextValue
+    LocalPlayer.state:set('ambulanceRespawnRemain', nextValue, true)
 end
 
 getDeathKey = function(name, fallback)
@@ -483,19 +511,15 @@ end
 
 local function syncLastPosition(coords)
     local formattedCoords = buildFormattedCoords(coords)
-    ESX.SetPlayerData('lastPosition', formattedCoords)
     TriggerServerEvent('esx:updateLastPosition', formattedCoords)
     return formattedCoords
 end
 
 local function getOnlineAmbulanceTotal()
     local emsData = nil
-    pcall(function()
-        emsData = ESX.GetOnlineJobs('ambulance')
-    end)
-
-    if emsData and emsData.onlineTotal then
-        return tonumber(emsData.onlineTotal) or 0
+    local onlineTotal = tonumber(GlobalState['ambulance:count'])
+    if onlineTotal then
+        return onlineTotal
     end
 
     return 0
@@ -503,11 +527,12 @@ end
 
 local function getAvailableEventRespawnAccount()
     local fineAmount = tonumber(Config.EventRespawnFineAmount) or 0
-    if ESX.GetAccountMoney("money") >= fineAmount then
+    local esx = ensureESX()
+    if esx and esx.GetAccountMoney and esx.GetAccountMoney("money") >= fineAmount then
         return 'money'
     end
 
-    if ESX.GetAccountMoney("bank") >= fineAmount then
+    if esx and esx.GetAccountMoney and esx.GetAccountMoney("bank") >= fineAmount then
         return 'bank'
     end
 
@@ -584,7 +609,7 @@ function startWarzoneTimer()
     if isWarzoneTimerActive then return end
     isWarzoneTimerActive = true
 
-    local noAmbulanceTimer = ESX.Math.Round(Config.EarlyRespawnTimerWarzone / 1000)
+    local noAmbulanceTimer = roundNumber(Config.EarlyRespawnTimerWarzone / 1000)
     local noAmbulanceTimerMax = noAmbulanceTimer
 
     Citizen.CreateThread(function()
@@ -755,7 +780,6 @@ local function syncDeadLastPosition()
         z = coords.z
     }
 
-    ESX.SetPlayerData('lastPosition', formattedCoords)
     TriggerServerEvent('esx:updateLastPosition', formattedCoords)
 end
 
@@ -815,7 +839,10 @@ function OnPlayerDeath()
     talk = false
     resetDeathInputRuntime()
     clearDeathRespawnCallback(true)
-    ESX.UI.Menu.CloseAll()
+    local esx = ensureESX()
+    if esx and esx.UI and esx.UI.Menu then
+        esx.UI.Menu.CloseAll()
+    end
     TriggerServerEvent('esx_ambulancejob:setDeathStatus', true)
     pcall(function ()
         exports['lizz_playerhud']:toggleHUD(false)
@@ -1007,7 +1034,13 @@ handleRequestTalkInput = function()
 
     DeathInputRuntime.requestTalkLastCheck = now
 
-    local player, distance = ESX.Game.GetClosestPlayer()
+    local esx = ensureESX()
+    if not esx or not esx.Game or not esx.Game.GetClosestPlayer then
+        showNotify(_U('no_players'))
+        return
+    end
+
+    local player, distance = esx.Game.GetClosestPlayer()
     if player == -1 or distance >= 3.0 then
         showNotify(_U('no_players'))
         return
@@ -1024,7 +1057,13 @@ AddEventHandler('esx_ambulancejob:requesToTalk', function(playerTalk)
 		{ label = "ไม่อนุญาตให้พูด", value = "no" }
 	}
 
-	ESX.UI.Menu.Open('default', GetCurrentResourceName(), 'requesToTalk', {
+	local esx = ensureESX()
+	if not esx or not esx.UI or not esx.UI.Menu then
+		TriggerServerEvent('esx_ambulancejob:requestAccept', playerTalk, false)
+		return
+	end
+
+	esx.UI.Menu.Open('default', GetCurrentResourceName(), 'requesToTalk', {
 		title = 'ผู้เล่น ' .. tostring(playerTalk) .. ' ขออนุญาตพูด',
 		align = 'bottom-right',
 		elements = elements
@@ -1074,7 +1113,10 @@ end)
 
 RegisterNetEvent('esx_ambulancejob:useItem')
 AddEventHandler('esx_ambulancejob:useItem', function(itemName)
-	ESX.UI.Menu.CloseAll()
+	local esx = ensureESX()
+	if esx and esx.UI and esx.UI.Menu then
+		esx.UI.Menu.CloseAll()
+	end
 	while action do
 		Wait(500)
 	end
@@ -1242,7 +1284,6 @@ local function respawnAtConfiguredPoint()
     }
 
     TriggerServerEvent('esx_ambulancejob:setDeathStatus', false)
-    ESX.SetPlayerData('lastPosition', formattedCoords)
     TriggerServerEvent('esx:updateLastPosition', formattedCoords)
 
     RespawnPed(playerPed, formattedCoords, heading)
@@ -1255,7 +1296,7 @@ end
 
 
 function startNoAmbulanceTimer()
-    local noAmbulanceTimer = ESX.Math.Round(Config.EarlyRespawnTimerNoEms / 1000)
+    local noAmbulanceTimer = roundNumber(Config.EarlyRespawnTimerNoEms / 1000)
     local noAmbulanceTimerMax = noAmbulanceTimer
 
     -- update progress bar
@@ -1308,8 +1349,8 @@ function startDeathTimer(dynamicTimerMs)
     local baseRespawnTimer = tonumber(dynamicTimerMs) or Config.EarlyRespawnTimer
     local dynamicTimerEnabled = Config.DynamicEarlyRespawnTimer and Config.DynamicEarlyRespawnTimer.enabled and tonumber(dynamicTimerMs) ~= nil
 
-    maxTimeSpawn     = ESX.Math.Round(baseRespawnTimer / 1000)
-    maxTimeBleedout  = ESX.Math.Round(Config.BleedoutTimer / 1000)
+    maxTimeSpawn     = roundNumber(baseRespawnTimer / 1000)
+    maxTimeBleedout  = roundNumber(Config.BleedoutTimer / 1000)
     earlySpawnTimer  = maxTimeSpawn
     bleedoutTimer    = maxTimeBleedout
 
@@ -1411,9 +1452,11 @@ function RespawnPed(ped, coords, heading, health)
     ClearPedBloodDamage(ped)
     SetEntityHealth(ped, heal)
 
-    ESX.UI.Menu.CloseAll()
+    local esx = ensureESX()
+    if esx and esx.UI and esx.UI.Menu then
+        esx.UI.Menu.CloseAll()
+    end
 
-    TriggerEvent('esx:onPlayerSpawn', pos.x, pos.y, pos.z)
     TriggerEvent('playerSpawned', pos.x, pos.y, pos.z)
 
     -- RESET UI เมื่อฟื้น
@@ -1463,7 +1506,6 @@ AddEventHandler('esx_ambulancejob:reviveinwarzone', function()
         while not IsScreenFadedOut() do Wait(50) end
 
         local spawnCoords = GetEntityCoords(playerPed)
-		ESX.SetPlayerData('lastPosition', spawnCoords)
 		TriggerServerEvent('esx:updateLastPosition', spawnCoords)
 		RespawnPed(playerPed, spawnCoords, 0.0)
 
@@ -1498,7 +1540,6 @@ AddEventHandler('esx_ambulancejob:revive', function()
 
         local spawnCoords = GetEntityCoords(playerPed)
 
-		ESX.SetPlayerData('lastPosition', spawnCoords)
 		TriggerServerEvent('esx:updateLastPosition', spawnCoords)
 		RespawnPed(playerPed, spawnCoords, 0.0)
 
@@ -1533,8 +1574,7 @@ AddEventHandler('esx_ambulancejob:reviveall', function()
 
 			local spawnCoords = GetEntityCoords(playerPed)
 
-			ESX.SetPlayerData('lastPosition', spawnCoords)
-			TriggerServerEvent('esx:updateLastPosition', spawnCoords)
+				TriggerServerEvent('esx:updateLastPosition', spawnCoords)
 			RespawnPed(playerPed, spawnCoords, 0.0)
 
 			StopScreenEffect('SwitchHUDIn')
@@ -1594,7 +1634,8 @@ closeUi = function ()
 end
 
 RegisterCommand('emsrespawntimer', function()
-    if not ESX.PlayerData.job or ESX.PlayerData.job.name ~= 'ambulance' then
+    local job = getPlayerJobState()
+    if not job or job.name ~= 'ambulance' then
         showNotify('คำสั่งนี้สำหรับหมอเท่านั้น', 'error')
         return
     end
