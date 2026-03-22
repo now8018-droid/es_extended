@@ -410,6 +410,7 @@ end)
 ---@param reason string
 AddEventHandler("playerDropped", function(reason)
     onPlayerDropped(source --[[@as number]], reason)
+    GlobalState.playerCount = ESX.GetNumPlayers()
 end)
 
 AddEventHandler("esx:playerLoaded", function(_, xPlayer, isNew)
@@ -419,6 +420,7 @@ AddEventHandler("esx:playerLoaded", function(_, xPlayer, isNew)
     Core.JobsPlayerCount[job] = (Core.JobsPlayerCount[job] or 0) + 1
     Core.PlayersByJob[job] = Core.PlayersByJob[job] or {}
     Core.PlayersByJob[job][xPlayer.source] = true
+    GlobalState.playerCount = ESX.GetNumPlayers()
 
     GlobalState[jobKey] = Core.JobsPlayerCount[job]
     if isNew then
