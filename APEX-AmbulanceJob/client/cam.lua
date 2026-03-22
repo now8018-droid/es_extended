@@ -22,10 +22,12 @@ local camState = {
 	targetCoords = nil,
 	currentCoords = nil,
 	desiredCoords = nil,
+	frozenTargetCoords = nil,
 	lastRaycastTime = 0,
 	lastTargetRefresh = 0,
 	lastFocusRefresh = 0,
-	collisionRadius = CAMERA_RADIUS
+	collisionRadius = CAMERA_RADIUS,
+	freezeUntil = 0,
 }
 
 local function clamp(value, minValue, maxValue)
@@ -127,6 +129,20 @@ local function refreshCollisionRadius(now, playerPed, targetCoords, behindCam)
 end
 
 local function updateCameraFrame(now)
+	if camState.freezeUntil and now < camState.freezeUntil and cam then
+		local frozenTarget = camState.frozenTargetCoords or camState.targetCoords
+		if camState.currentCoords then
+			SetCamCoord(cam, camState.currentCoords.x, camState.currentCoords.y, camState.currentCoords.z)
+		end
+		if frozenTarget then
+			PointCamAtCoord(cam, frozenTarget.x, frozenTarget.y, frozenTarget.z + 0.5)
+		end
+		return 0
+	elseif camState.freezeUntil and now >= camState.freezeUntil then
+		camState.freezeUntil = 0
+		camState.frozenTargetCoords = nil
+	end
+
 	local playerPed, targetCoords = refreshTargetCoords(now)
 	if not playerPed or not targetCoords or not cam then
 		return CAMERA_IDLE_WAIT_MS
@@ -187,10 +203,12 @@ function StartDeathCam()
 	camState.targetCoords = coords
 	camState.currentCoords = nil
 	camState.desiredCoords = nil
+	camState.frozenTargetCoords = nil
 	camState.lastRaycastTime = 0
 	camState.lastTargetRefresh = 0
 	camState.lastFocusRefresh = 0
 	camState.collisionRadius = CAMERA_RADIUS
+	camState.freezeUntil = 0
 
 	ClearFocus()
 	cam = CreateCamWithParams("DEFAULT_SCRIPTED_CAMERA", coords, 0.0, 0.0, 0.0, CAMERA_FOV)
@@ -212,10 +230,22 @@ function EndDeathCam()
 	camState.targetCoords = nil
 	camState.currentCoords = nil
 	camState.desiredCoords = nil
+	camState.frozenTargetCoords = nil
 	camState.lastRaycastTime = 0
 	camState.lastTargetRefresh = 0
 	camState.lastFocusRefresh = 0
 	camState.collisionRadius = CAMERA_RADIUS
+	camState.freezeUntil = 0
+end
+
+function FreezeDeathCam(durationMs)
+	if not cam then
+		return
+	end
+
+	local duration = math.max(0, tonumber(durationMs) or 1000)
+	camState.freezeUntil = GetGameTimer() + duration
+	camState.frozenTargetCoords = camState.targetCoords or GetEntityCoords(PlayerPedId())
 end
 
 -- ใช้ OnPlayerData callback แทน polling เพื่อลด CPU usage

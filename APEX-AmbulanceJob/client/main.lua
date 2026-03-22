@@ -121,6 +121,7 @@ local DeathInputRuntime = {
     gangNextAllowed = 0,
     respawnCallback = nil,
     respawnPromptVisible = false,
+    lastControlTrigger = {},
 }
 
 local BLOCK_ZONE_UPDATE_MS_DEAD = 150
@@ -171,6 +172,7 @@ local function resetDeathInputRuntime()
     DeathInputRuntime.gangNextAllowed = 0
     DeathInputRuntime.respawnCallback = nil
     DeathInputRuntime.respawnPromptVisible = false
+    DeathInputRuntime.lastControlTrigger = {}
 end
 
 local function bindDeathRespawnCallback(callback)
@@ -503,7 +505,28 @@ local function handleZoneDeath(zoneType, config, zoneIndex)
 end
 
 local isWarzoneTimerActive = false
-local DEAD_INPUT_POLL_MS = 25
+local DEAD_INPUT_POLL_MS = 10
+
+local function wasDeathControlActivated(actionName, fallbackKey, debounceMs)
+    local keyCode = select(2, getDeathKey(actionName, fallbackKey))
+    if not keyCode then
+        return false
+    end
+
+    if not (IsDisabledControlJustPressed(0, keyCode) or IsDisabledControlPressed(0, keyCode)) then
+        return false
+    end
+
+    local now = GetGameTimer()
+    local lastTrigger = DeathInputRuntime.lastControlTrigger[actionName] or 0
+    local window = tonumber(debounceMs) or 250
+    if (now - lastTrigger) < window then
+        return false
+    end
+
+    DeathInputRuntime.lastControlTrigger[actionName] = now
+    return true
+end
 
 local function buildFormattedCoords(coords)
     return {
@@ -949,24 +972,24 @@ Citizen.CreateThread(function()
             local inBlockZone = IsInBlockZone()
 
             if not inBlockZone then
-                if IsDisabledControlJustPressed(0, select(2, getDeathKey('respawn', 'G'))) and DeathInputRuntime.respawnCallback then
+                if wasDeathControlActivated('respawn', 'G', 250) and DeathInputRuntime.respawnCallback then
                     DeathInputRuntime.respawnCallback()
                 end
 
-                if IsDisabledControlJustPressed(0, select(2, getDeathKey('distress', 'M'))) then
+                if wasDeathControlActivated('distress', 'M', 250) then
                     handleDistressInput()
                 end
 
-                if IsDisabledControlJustPressed(0, select(2, getDeathKey('gang', 'Q'))) then
+                if wasDeathControlActivated('gang', 'Q', 250) then
                     handleGangDistressInput()
                 end
 
-                if IsDisabledControlJustPressed(0, select(2, getDeathKey('requestTalk', 'R'))) then
+                if wasDeathControlActivated('requestTalk', 'R', 250) then
                     handleRequestTalkInput()
                 end
             end
 
-            if IsDisabledControlJustPressed(0, select(2, getDeathKey('clearBody', 'X'))) then
+            if wasDeathControlActivated('clearBody', 'X', 250) then
                 handleClearBodyInput()
             end
         end
@@ -982,6 +1005,9 @@ handleClearBodyInput = function()
     local playerPed = PlayerPedId()
     FreezeEntityPosition(playerPed, false)
     ClearPedTasksImmediately(playerPed)
+    if FreezeDeathCam then
+        FreezeDeathCam(1200)
+    end
     playClearBodyBounce()
 
     local clearBodyCooldownMs = getDeathKeyCooldownMs('clearBody', 30)
