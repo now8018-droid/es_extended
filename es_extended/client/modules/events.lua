@@ -218,9 +218,47 @@ AddEventHandler("skinchanger:modelLoaded", function()
     tryResync()
 end)
 
--- Custom inventory: อาวุธบน ped ให้สคริปต์กระเป๋าจัดการ (ไม่ restore loadout แบบ ESX เดิม)
+local function restorePedLoadoutFromPlayerData()
+    local ped = PlayerPedId()
+    local loadout = ESX.PlayerData.loadout or {}
+
+    RemoveAllPedWeapons(ped, true)
+
+    for i = 1, #loadout do
+        local weapon = loadout[i]
+        if weapon and weapon.name then
+            local weaponHash = joaat(weapon.name)
+            local ammo = tonumber(weapon.ammo) or 0
+
+            GiveWeaponToPed(ped, weaponHash, ammo, false, false)
+
+            local components = weapon.components or {}
+            for componentIndex = 1, #components do
+                local componentName = components[componentIndex]
+                if componentName and componentName ~= "clip_default" then
+                    GiveWeaponComponentToPed(ped, weaponHash, joaat(componentName))
+                end
+            end
+
+            if weapon.tintIndex and weapon.tintIndex > 0 then
+                SetPedWeaponTintIndex(ped, weaponHash, weapon.tintIndex)
+            end
+
+            SetPedAmmo(ped, weaponHash, ammo)
+        end
+    end
+
+    SetCurrentPedWeapon(ped, `WEAPON_UNARMED`, true)
+end
+
 AddEventHandler("esx:restoreLoadout", function()
     ESX.SetPlayerData("ped", PlayerPedId())
+
+    if Config.CustomInventory and not Config.RestoreLoadoutWithCustomInventory then
+        return
+    end
+
+    restorePedLoadoutFromPlayerData()
 end)
 
 ---@diagnostic disable-next-line: param-type-mismatch

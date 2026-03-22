@@ -121,7 +121,40 @@ local DeathInputRuntime = {
     gangNextAllowed = 0,
     respawnCallback = nil,
     respawnPromptVisible = false,
+    lastControlTrigger = {},
 }
+
+local BLOCK_ZONE_UPDATE_MS_DEAD = 150
+local BLOCK_ZONE_UPDATE_MS_ALIVE = 1000
+local BlockZoneRuntime = {
+    zones = {},
+    isInside = false,
+    lastUpdate = 0
+}
+local NuiStateCache = {
+    uiVisible = nil,
+    blockzone = nil,
+    talk = nil,
+    sendsignal = nil,
+    addclass = nil,
+    requestTalk = nil,
+    gang = nil,
+    police = nil,
+    time = nil
+}
+local setBlockZoneUi = function(_) end
+local setDeathUiVisible = function(_) end
+
+for i = 1, #(Config.BlockZone or {}) do
+    local zone = Config.BlockZone[i]
+    if zone and zone.coords then
+        local radius = tonumber(zone.radius) or 0.0
+        BlockZoneRuntime.zones[#BlockZoneRuntime.zones + 1] = {
+            coords = zone.coords,
+            radiusSq = radius * radius
+        }
+    end
+end
 
 local handleClearBodyInput
 local handleRequestTalkInput
@@ -139,6 +172,7 @@ local function resetDeathInputRuntime()
     DeathInputRuntime.gangNextAllowed = 0
     DeathInputRuntime.respawnCallback = nil
     DeathInputRuntime.respawnPromptVisible = false
+    DeathInputRuntime.lastControlTrigger = {}
 end
 
 local function bindDeathRespawnCallback(callback)
@@ -471,7 +505,28 @@ local function handleZoneDeath(zoneType, config, zoneIndex)
 end
 
 local isWarzoneTimerActive = false
-local DEAD_INPUT_POLL_MS = 25
+local DEAD_INPUT_POLL_MS = 10
+
+local function wasDeathControlActivated(actionName, fallbackKey, debounceMs)
+    local keyCode = select(2, getDeathKey(actionName, fallbackKey))
+    if not keyCode then
+        return false
+    end
+
+    if not (IsDisabledControlJustPressed(0, keyCode) or IsDisabledControlPressed(0, keyCode)) then
+        return false
+    end
+
+    local now = GetGameTimer()
+    local lastTrigger = DeathInputRuntime.lastControlTrigger[actionName] or 0
+    local window = tonumber(debounceMs) or 250
+    if (now - lastTrigger) < window then
+        return false
+    end
+
+    DeathInputRuntime.lastControlTrigger[actionName] = now
+    return true
+end
 
 local function buildFormattedCoords(coords)
     return {
@@ -822,19 +877,9 @@ function OnPlayerDeath()
     end)
     
     SetTimeout(Config.DeathUIDelay, function()
-        if IsInBlockZone() then
-            -- ส่ง NUI แจ้งว่าอยู่ BlockZone โดยไม่เปิด keymap
-            SendNUIMessage({
-                type = 'blockzone',
-                status = true
-            })
-        else
-            -- นอก BlockZone ใช้ ui ปกติ
-            SendNUIMessage({
-                type = 'ui',
-                status = true
-            })
-        end
+        local inBlockZone = IsInBlockZone(true)
+        setDeathUiVisible(true)
+        setBlockZoneUi(inBlockZone)
     end)
 
 	local requested = ApexServerRequest('getDynamicRespawnTimer', nil, function(success, response)
@@ -885,6 +930,7 @@ Citizen.CreateThread(function()
             if not playerPed or not DoesEntityExist(playerPed) then
                 Citizen.Wait(1000)
             else
+                local inBlockZone = IsInBlockZone()
                 DisableAllControlActions(0)
 
                 -- อนุญาตให้หมุนกล้องได้ตลอด แม้กด ESC เข้า/ออกเมนู
@@ -894,7 +940,7 @@ Citizen.CreateThread(function()
                 EnableControlAction(1, 2, true)
                 EnableControlAction(0, 322, true)
 
-                if IsInBlockZone() then
+                if inBlockZone then
                     -- ถ้าอยู่ใน BlockZone
                     EnableControlAction(0, select(2, getDeathKey('clearBody', 'X')), true)
                     EnableControlAction(0, select(2, getDeathKey('forceRespawn', 'DELETE')), true)
@@ -918,63 +964,33 @@ Citizen.CreateThread(function()
 end)
 
 Citizen.CreateThread(function()
-    local keyState = {
-        respawn = false,
-        distress = false,
-        gang = false,
-        clearBody = false,
-        requestTalk = false
-    }
-
     while true do
         if not IsDead then
-            for actionName, _ in pairs(keyState) do
-                keyState[actionName] = false
-            end
             Citizen.Wait(500)
         else
             Citizen.Wait(DEAD_INPUT_POLL_MS)
+            local inBlockZone = IsInBlockZone()
 
-            if not IsInBlockZone() then
-                local respawnPressed = IsDisabledControlPressed(0, select(2, getDeathKey('respawn', 'G')))
-                if respawnPressed and not keyState.respawn and DeathInputRuntime.respawnCallback then
-                    keyState.respawn = true
+            if not inBlockZone then
+                if wasDeathControlActivated('respawn', 'G', 250) and DeathInputRuntime.respawnCallback then
                     DeathInputRuntime.respawnCallback()
-                elseif not respawnPressed then
-                    keyState.respawn = false
                 end
 
-                local distressPressed = IsDisabledControlPressed(0, select(2, getDeathKey('distress', 'M')))
-                if distressPressed and not keyState.distress then
-                    keyState.distress = true
+                if wasDeathControlActivated('distress', 'M', 250) then
                     handleDistressInput()
-                elseif not distressPressed then
-                    keyState.distress = false
                 end
 
-                local gangPressed = IsDisabledControlPressed(0, select(2, getDeathKey('gang', 'Q')))
-                if gangPressed and not keyState.gang then
-                    keyState.gang = true
+                if wasDeathControlActivated('gang', 'Q', 250) then
                     handleGangDistressInput()
-                elseif not gangPressed then
-                    keyState.gang = false
                 end
 
-                local talkPressed = IsDisabledControlPressed(0, select(2, getDeathKey('requestTalk', 'R')))
-                if talkPressed and not keyState.requestTalk then
-                    keyState.requestTalk = true
+                if wasDeathControlActivated('requestTalk', 'R', 250) then
                     handleRequestTalkInput()
-                elseif not talkPressed then
-                    keyState.requestTalk = false
                 end
             end
 
-            local clearBodyPressed = IsDisabledControlPressed(0, select(2, getDeathKey('clearBody', 'X')))
-            if clearBodyPressed and not keyState.clearBody then
-                keyState.clearBody = true
+            if wasDeathControlActivated('clearBody', 'X', 250) then
                 handleClearBodyInput()
-            elseif not clearBodyPressed then
-                keyState.clearBody = false
             end
         end
     end
@@ -989,6 +1005,9 @@ handleClearBodyInput = function()
     local playerPed = PlayerPedId()
     FreezeEntityPosition(playerPed, false)
     ClearPedTasksImmediately(playerPed)
+    if FreezeDeathCam then
+        FreezeDeathCam(1200)
+    end
     playClearBodyBounce()
 
     local clearBodyCooldownMs = getDeathKeyCooldownMs('clearBody', 30)
@@ -1550,31 +1569,69 @@ if Config.LoadIpl then
 	end)
 end
 
-function IsInBlockZone()
+local function refreshBlockZoneState(forceRefresh)
+    local now = GetGameTimer()
+    local refreshMs = IsDead and BLOCK_ZONE_UPDATE_MS_DEAD or BLOCK_ZONE_UPDATE_MS_ALIVE
+
+    if not forceRefresh and (now - BlockZoneRuntime.lastUpdate) < refreshMs then
+        return BlockZoneRuntime.isInside
+    end
+
     local playerPed = PlayerPedId()
+    if not playerPed or not DoesEntityExist(playerPed) then
+        return BlockZoneRuntime.isInside
+    end
+
     local playerCoords = GetEntityCoords(playerPed)
-    for _, zone in pairs(Config.BlockZone) do
+    local isInside = false
+
+    for i = 1, #BlockZoneRuntime.zones do
+        local zone = BlockZoneRuntime.zones[i]
         local dx = playerCoords.x - zone.coords.x
         local dy = playerCoords.y - zone.coords.y
         local dz = playerCoords.z - zone.coords.z
-        local radius = zone.radius or 0.0
-        if (dx * dx + dy * dy + dz * dz) <= (radius * radius) then
-            return true
+        if (dx * dx + dy * dy + dz * dz) <= zone.radiusSq then
+            isInside = true
+            break
         end
     end
-    return false
+
+    BlockZoneRuntime.isInside = isInside
+    BlockZoneRuntime.lastUpdate = now
+    return isInside
 end
 
-local NuiStateCache = {
-    uiVisible = nil,
-    talk = nil,
-    sendsignal = nil,
-    addclass = nil,
-    requestTalk = nil,
-    gang = nil,
-    police = nil,
-    time = nil
-}
+function IsInBlockZone(forceRefresh)
+    return refreshBlockZoneState(forceRefresh)
+end
+
+Citizen.CreateThread(function()
+    while true do
+        local inBlockZone = refreshBlockZoneState(true)
+        if IsDead and NuiStateCache.uiVisible then
+            setBlockZoneUi(inBlockZone)
+        end
+        Citizen.Wait(IsDead and BLOCK_ZONE_UPDATE_MS_DEAD or BLOCK_ZONE_UPDATE_MS_ALIVE)
+    end
+end)
+
+setBlockZoneUi = function(bool)
+    if NuiStateCache.blockzone == bool then return end
+    NuiStateCache.blockzone = bool
+    SendNUIMessage({
+        type = 'blockzone',
+        status = bool
+    })
+end
+
+setDeathUiVisible = function(bool)
+    if NuiStateCache.uiVisible == bool then return end
+    NuiStateCache.uiVisible = bool
+    SendNUIMessage({
+        type = 'ui',
+        status = bool
+    })
+end
 
 function talkingSetui(bool)
 	if NuiStateCache.talk == bool then return end
@@ -1586,11 +1643,8 @@ function talkingSetui(bool)
 end
 
 closeUi = function ()
-	NuiStateCache.uiVisible = false
-	SendNUIMessage({
-		type = 'ui',
-		status = false
-	})
+	setBlockZoneUi(false)
+	setDeathUiVisible(false)
 end
 
 RegisterCommand('emsrespawntimer', function()

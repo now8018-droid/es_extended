@@ -39,6 +39,7 @@ local pairs = pairs
 local ipairs = ipairs
 local pcall = pcall
 local table_concat = table.concat
+local string_lower = string.lower
 
 -- ------------------------------------------------------------------
 -- Runtime systems
@@ -47,6 +48,7 @@ local PLAYER_CACHE = {} -- [src] = { source, identifier, job, money, inventory, 
 local PLAYER_PEDS = {}  -- [src] = ped handle
 local PLAYER_STATE = {} -- [src] = { requestLimiter, actionCooldowns }
 local JOB_INDEX = {}    -- [jobName] = { [src] = true }
+local JOB_COUNT = {}    -- [jobName] = online player count
 local LOCK_SYSTEM = {}  -- [src] = true while processing protected mutation
 local WRITE_QUEUE = {
     death = {}          -- [identifier] = 0/1
@@ -201,11 +203,136 @@ local function isAmbulance(cache)
     return cache and cache.job and cache.job.name == 'ambulance'
 end
 
+local function normalizeItemName(itemName)
+    if not isValidString(itemName) then return nil end
+    return string_lower(itemName)
+end
+
+local function getRequiredMedicItem(actionType)
+    local required = Config.RequiredMedicItems and Config.RequiredMedicItems[actionType]
+    local itemName = required and normalizeItemName(required.name)
+    if not itemName then return nil end
+
+    return {
+        name = itemName,
+        label = required.label or required.name
+    }
+end
+
+local function isAllowedPharmacyItem(itemName)
+    local normalized = normalizeItemName(itemName)
+    if not normalized then return false end
+
+    local pharmacyItems = Config.PharmacyItems or {}
+    for i = 1, #pharmacyItems do
+        local entry = pharmacyItems[i]
+        if normalizeItemName(entry and entry.item) == normalized then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function hasInventoryItem(cache, itemName, minCount)
+    local normalized = normalizeItemName(itemName)
+    if not cache or not normalized then return false end
+
+    local needed = tonumber(minCount) or 1
+    local entry = cache.inventory and cache.inventory[normalized]
+    local count = entry and tonumber(entry.count) or 0
+    return count >= needed
+end
+
+local function collectValidTargets(src, rawTargets, maxTargets, maxDistance)
+    if not isValidSource(src) then return {} end
+
+    local results = {}
+    local seen = {}
+    local requested = type(rawTargets) == 'table' and rawTargets or { rawTargets }
+    local limit = math_min(tonumber(maxTargets) or 1, 25)
+
+    for i = 1, #requested do
+        local target = tonumber(requested[i])
+        if #results >= limit then
+            break
+        end
+
+        if isValidSource(target) and target ~= src and not seen[target] and getPlayerCache(target) and isTargetNearSource(src, target, maxDistance) then
+            seen[target] = true
+            results[#results + 1] = target
+        end
+    end
+
+    return results
+end
+
+local function notifyPlayer(src, message)
+    if isValidSource(src) and isValidString(message) then
+        TriggerClientEvent('esx:showNotification', src, message)
+    end
+end
+
+local function performMedicAction(src, actionType, rawTargets, options)
+    local sender = getPlayerCache(src)
+    if not isAmbulance(sender) then
+        return false, 'unauthorized'
+    end
+
+    local requiredItem = getRequiredMedicItem(actionType)
+    if not requiredItem then
+        return false, 'invalid_action'
+    end
+
+    local maxDistance = tonumber((options or {}).maxDistance) or tonumber(Config.ReviveDistance) or 4.0
+    local maxTargets = (options and options.maxTargets) or 1
+    local targets = collectValidTargets(src, rawTargets, maxTargets, maxDistance)
+    if #targets == 0 then
+        return false, 'no_targets'
+    end
+
+    local lockOk, actionOk, actionReason = withPlayerLock(src, function()
+        updateInventoryCache(sender)
+        if not hasInventoryItem(sender, requiredItem.name, 1) then
+            return false, 'missing_item'
+        end
+
+        sender.xPlayer.removeInventoryItem(requiredItem.name, 1)
+        updateInventoryCache(sender)
+
+        if actionType == 'revive' then
+            for i = 1, #targets do
+                TriggerClientEvent('esx_ambulancejob:revive', targets[i])
+            end
+        else
+            local healType = ((options or {}).healType == 'big') and 'big' or 'small'
+            for i = 1, #targets do
+                TriggerClientEvent('esx_ambulancejob:heal', targets[i], healType)
+            end
+        end
+
+        return true
+    end)
+
+    if not lockOk then
+        return false, 'processing'
+    end
+
+    if not actionOk then
+        return false, actionReason or 'action_failed'
+    end
+
+    return true
+end
+
 local function removeFromJobIndex(src, oldJobName)
     if not isValidString(oldJobName) then return end
     local bucket = JOB_INDEX[oldJobName]
     if bucket then
-        bucket[src] = nil
+        if bucket[src] then
+            bucket[src] = nil
+            JOB_COUNT[oldJobName] = math_max(0, (JOB_COUNT[oldJobName] or 1) - 1)
+        end
     end
 end
 
@@ -216,7 +343,10 @@ local function addToJobIndex(src, jobName)
         bucket = {}
         JOB_INDEX[jobName] = bucket
     end
-    bucket[src] = true
+    if not bucket[src] then
+        bucket[src] = true
+        JOB_COUNT[jobName] = (JOB_COUNT[jobName] or 0) + 1
+    end
 end
 
 local function setPlayerJobIndex(src, oldJobName, newJobName)
@@ -360,16 +490,7 @@ local function isTargetNearSource(src, target, maxDistance)
 end
 
 local function getOnlineAmbulanceCount()
-    local bucket = JOB_INDEX.ambulance
-    if not bucket then return 0 end
-
-    local count = 0
-    for src, _ in pairs(bucket) do
-        if PLAYER_CACHE[src] or ESX.GetPlayerFromId(src) then
-            count = count + 1
-        end
-    end
-    return count
+    return JOB_COUNT.ambulance or 0
 end
 
 -- ------------------------------------------------------------------
@@ -742,6 +863,7 @@ RegisterNetEvent('esx_ambulancejob:giveItem', function(item, count)
 
     local amount = math_floor(tonumber(count) or 0)
     if not isValidString(item) or amount <= 0 or amount > 100 then return end
+    if not isAllowedPharmacyItem(item) then return end
 
     withPlayerLock(src, function()
         cache.xPlayer.addInventoryItem(item, amount)
@@ -756,12 +878,19 @@ RegisterNetEvent('esx_ambulancejob:removeItem', function(item)
 
     local cache = getPlayerCache(src)
     if not cache then return end
-    if not isValidString(item) then return end
+    local normalizedItem = normalizeItemName(item)
+    local reviveItem = getRequiredMedicItem('revive')
+    local healItem = getRequiredMedicItem('heal')
+    if not normalizedItem then return end
+    if normalizedItem ~= normalizeItemName(reviveItem and reviveItem.name)
+        and normalizedItem ~= normalizeItemName(healItem and healItem.name) then
+        return
+    end
 
     withPlayerLock(src, function()
-        local invItem = cache.xPlayer.getInventoryItem(item)
+        local invItem = cache.xPlayer.getInventoryItem(normalizedItem)
         if invItem and (tonumber(invItem.count) or 0) > 0 then
-            cache.xPlayer.removeInventoryItem(item, 1)
+            cache.xPlayer.removeInventoryItem(normalizedItem, 1)
             updateInventoryCache(cache)
         end
     end)
@@ -790,14 +919,16 @@ RegisterNetEvent('esx_ambulancejob:revive', function(target)
     if not isValidSource(src) then return end
     if not canRunEvent(src, 'revive') then return end
 
-    local sender = getPlayerCache(src)
-    if not isAmbulance(sender) then return end
-
-    target = tonumber(target)
-    if not isValidSource(target) or target == src or not getPlayerCache(target) then return end
-    if not isTargetNearSource(src, target, Config.ReviveDistance or 4.0) then return end
-
-    TriggerClientEvent('esx_ambulancejob:revive', target)
+    local ok, reason = performMedicAction(src, 'revive', target, {
+        maxTargets = 1,
+        maxDistance = Config.ReviveDistance or 4.0
+    })
+    if not ok and reason == 'missing_item' then
+        local required = getRequiredMedicItem('revive')
+        notifyPlayer(src, ('คุณไม่มี %s'):format(required and required.label or 'ไอเท็มที่ต้องใช้'))
+    elseif not ok and reason == 'no_targets' then
+        notifyPlayer(src, 'ไม่พบผู้เล่นในระยะที่สามารถชุบได้')
+    end
 end)
 
 RegisterNetEvent('esx_ambulancejob:superRevive', function(targetList)
@@ -805,18 +936,16 @@ RegisterNetEvent('esx_ambulancejob:superRevive', function(targetList)
     if not isValidSource(src) then return end
     if not canRunEvent(src, 'superRevive') then return end
 
-    local sender = getPlayerCache(src)
-    if not isAmbulance(sender) then return end
     if type(targetList) ~= 'table' then return end
-
-    local maxTargets = math_min(#targetList, 25)
-    local maxDistance = Config.ReviveDistance or 4.0
-
-    for i = 1, maxTargets do
-        local target = tonumber(targetList[i])
-        if isValidSource(target) and target ~= src and getPlayerCache(target) and isTargetNearSource(src, target, maxDistance) then
-            TriggerClientEvent('esx_ambulancejob:revive', target)
-        end
+    local ok, reason = performMedicAction(src, 'revive', targetList, {
+        maxTargets = #targetList,
+        maxDistance = Config.ReviveDistance or 4.0
+    })
+    if not ok and reason == 'missing_item' then
+        local required = getRequiredMedicItem('revive')
+        notifyPlayer(src, ('คุณไม่มี %s'):format(required and required.label or 'ไอเท็มที่ต้องใช้'))
+    elseif not ok and reason == 'no_targets' then
+        notifyPlayer(src, 'ไม่พบผู้เล่นในระยะที่สามารถชุบได้')
     end
 end)
 
@@ -825,15 +954,17 @@ RegisterNetEvent('esx_ambulancejob:heal', function(target, healType)
     if not isValidSource(src) then return end
     if not canRunEvent(src, 'heal') then return end
 
-    local sender = getPlayerCache(src)
-    if not isAmbulance(sender) then return end
-
-    target = tonumber(target)
-    if not isValidSource(target) or target == src or not getPlayerCache(target) then return end
-    if not isTargetNearSource(src, target, Config.ReviveDistance or 4.0) then return end
-
-    local normalizedHealType = healType == 'big' and 'big' or 'small'
-    TriggerClientEvent('esx_ambulancejob:heal', target, normalizedHealType)
+    local ok, reason = performMedicAction(src, 'heal', target, {
+        maxTargets = 1,
+        maxDistance = Config.ReviveDistance or 4.0,
+        healType = healType
+    })
+    if not ok and reason == 'missing_item' then
+        local required = getRequiredMedicItem('heal')
+        notifyPlayer(src, ('คุณไม่มี %s'):format(required and required.label or 'ไอเท็มที่ต้องใช้'))
+    elseif not ok and reason == 'no_targets' then
+        notifyPlayer(src, 'ไม่พบผู้เล่นในระยะที่สามารถฉีดยาได้')
+    end
 end)
 
 RegisterNetEvent('esx_ambulancejob:healMany', function(targetList, healType)
@@ -841,19 +972,17 @@ RegisterNetEvent('esx_ambulancejob:healMany', function(targetList, healType)
     if not isValidSource(src) then return end
     if not canRunEvent(src, 'healMany') then return end
 
-    local sender = getPlayerCache(src)
-    if not isAmbulance(sender) then return end
     if type(targetList) ~= 'table' then return end
-
-    local maxTargets = math_min(#targetList, 25)
-    local maxDistance = Config.ReviveDistance or 4.0
-    local normalizedHealType = healType == 'big' and 'big' or 'small'
-
-    for i = 1, maxTargets do
-        local target = tonumber(targetList[i])
-        if isValidSource(target) and target ~= src and getPlayerCache(target) and isTargetNearSource(src, target, maxDistance) then
-            TriggerClientEvent('esx_ambulancejob:heal', target, normalizedHealType)
-        end
+    local ok, reason = performMedicAction(src, 'heal', targetList, {
+        maxTargets = #targetList,
+        maxDistance = Config.ReviveDistance or 4.0,
+        healType = healType
+    })
+    if not ok and reason == 'missing_item' then
+        local required = getRequiredMedicItem('heal')
+        notifyPlayer(src, ('คุณไม่มี %s'):format(required and required.label or 'ไอเท็มที่ต้องใช้'))
+    elseif not ok and reason == 'no_targets' then
+        notifyPlayer(src, 'ไม่พบผู้เล่นในระยะที่สามารถฉีดยาได้')
     end
 end)
 
