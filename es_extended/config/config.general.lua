@@ -97,6 +97,17 @@ Config.SlowLoopInterval = 2500
 Config.EnablePlayerSyncLookAt = false -- ตัวเลือก NetworkSetLocalPlayerSyncLookAt มีต้นทุนเล็กน้อย; ปิดไว้เพื่อลด resmon ให้ต่ำที่สุด
 Config.ClientStatebagCoordsInterval = 8000 -- ช่วงเวลาที่ client ส่งพิกัดเข้า statebag หน่วยเป็นมิลลิวินาที; ค่ายิ่งมาก งาน Lua/native ยิ่งน้อย
 Config.ClientStatebagCoordsMinMove = 4.0 -- ผู้เล่นต้องขยับอย่างน้อยกี่เมตรก่อนส่งพิกัดใหม่อีกครั้ง เพื่อลดจำนวนการเขียน statebag
+Config.DiscordRichPresence = {
+    enabled = true,
+    appId = "", -- ถ้าว่างจะ fallback ไปอ่าน convar esx:discordAppId หรือ discord_app_id
+    updateInterval = 30000,
+    statusText = "Playing on ESX",
+    showPlayerName = true,
+    showPlayerId = true,
+    showJob = true,
+    largeAssetKey = "",
+    largeAssetText = "ESX Legacy"
+}
 Config.PlayerScopeBucketSize = 128.0 -- ขนาดพื้นที่ของ bucket ที่ใช้แบ่ง scope ผู้เล่น
 Config.ScopeDirtyFlushInterval = 250 -- ช่วงเวลาประมวลผลงาน scope incremental ที่ค้างอยู่ หน่วยเป็นมิลลิวินาที
 Config.PlayerScopeRefreshInterval = 2000 -- ค่าความเข้ากันได้ย้อนหลังสำหรับโหมด fallback ที่ยังใช้ลูปรีเฟรช scope แบบเดิม
