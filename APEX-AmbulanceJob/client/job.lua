@@ -8,6 +8,96 @@ local AmbulanceMenuState                                  = {
 	level = 'none', -- none | main | submenu
 	previousOpener = nil
 }
+local HospitalRuntimeCache = {
+	ambulanceActions = {},
+	pharmacies = {},
+	vehicles = {},
+	helicopters = {},
+	fastTravels = {}
+}
+
+local function rebuildHospitalRuntimeCache()
+	HospitalRuntimeCache.ambulanceActions = {}
+	HospitalRuntimeCache.pharmacies = {}
+	HospitalRuntimeCache.vehicles = {}
+	HospitalRuntimeCache.helicopters = {}
+	HospitalRuntimeCache.fastTravels = {}
+
+	for hospitalNum, hospital in pairs(Config.Hospitals or {}) do
+		for index, coords in ipairs(hospital.AmbulanceActions or {}) do
+			HospitalRuntimeCache.ambulanceActions[#HospitalRuntimeCache.ambulanceActions + 1] = {
+				hospital = hospitalNum,
+				part = 'AmbulanceActions',
+				partNum = index,
+				coords = coords,
+				drawDistSq = 49.0,
+				enterDistSq = Config.Marker.x * Config.Marker.x,
+				marker = Config.Marker,
+				faceCamera = true,
+				rotate = true
+			}
+		end
+
+		for index, coords in ipairs(hospital.Pharmacies or {}) do
+			HospitalRuntimeCache.pharmacies[#HospitalRuntimeCache.pharmacies + 1] = {
+				hospital = hospitalNum,
+				part = 'Pharmacy',
+				partNum = index,
+				coords = coords,
+				drawDistSq = 49.0,
+				enterDistSq = Config.Marker.x * Config.Marker.x,
+				marker = Config.Marker,
+				faceCamera = false,
+				rotate = true
+			}
+		end
+
+		for index, vehicle in ipairs(hospital.Vehicles or {}) do
+			HospitalRuntimeCache.vehicles[#HospitalRuntimeCache.vehicles + 1] = {
+				hospital = hospitalNum,
+				part = 'Vehicles',
+				partNum = index,
+				coords = vehicle.Spawner,
+				drawDistSq = 100.0,
+				enterDistSq = vehicle.Marker.x * vehicle.Marker.x,
+				marker = vehicle.Marker,
+				faceCamera = false,
+				rotate = vehicle.Marker.rotate
+			}
+		end
+
+		for index, helicopter in ipairs(hospital.Helicopters or {}) do
+			HospitalRuntimeCache.helicopters[#HospitalRuntimeCache.helicopters + 1] = {
+				hospital = hospitalNum,
+				part = 'Helicopters',
+				partNum = index,
+				coords = helicopter.Spawner,
+				drawDistSq = 400.0,
+				enterDistSq = helicopter.Marker.x * helicopter.Marker.x,
+				marker = helicopter.Marker,
+				faceCamera = false,
+				rotate = helicopter.Marker.rotate
+			}
+		end
+
+		for index, fastTravel in ipairs(hospital.FastTravels or {}) do
+			HospitalRuntimeCache.fastTravels[#HospitalRuntimeCache.fastTravels + 1] = {
+				hospital = hospitalNum,
+				part = 'FastTravels',
+				partNum = index,
+				coords = fastTravel.From,
+				drawDistSq = 400.0,
+				enterDistSq = fastTravel.Marker.x * fastTravel.Marker.x,
+				marker = fastTravel.Marker,
+				faceCamera = false,
+				rotate = fastTravel.Marker.rotate,
+				to = fastTravel.To
+			}
+		end
+	end
+end
+
+rebuildHospitalRuntimeCache()
 
 local function safeCloseMenu(menu)
 	if menu and type(menu.close) == 'function' then
@@ -296,7 +386,6 @@ local function doSingleRevive(targetPlayer, billAmount)
 		if not IsPedDeadOrDying(targetPed, 1) then return end
 
 		runReviveAnimation(function()
-			TriggerServerEvent('esx_ambulancejob:removeItem', reviveItem)
 			TriggerServerEvent('esx_ambulancejob:revive', GetPlayerServerId(targetPlayer))
 			sendMedicBill(targetPlayer, billAmount, "Fine: Revive")
 		end)
@@ -320,7 +409,6 @@ local function doMassRevive(radius, billAmount)
 		end
 
 		runReviveAnimation(function()
-			TriggerServerEvent('esx_ambulancejob:removeItem', reviveItem)
 			local targetServerIds = {}
 			for index, playerId in ipairs(deadTargets) do
 				targetServerIds[index] = GetPlayerServerId(playerId)
@@ -340,7 +428,6 @@ local function doSingleHeal(targetPlayer, billAmount)
 		end
 
 		runHealAnimation(function()
-			TriggerServerEvent('esx_ambulancejob:removeItem', healItem)
 			TriggerServerEvent('esx_ambulancejob:heal', GetPlayerServerId(targetPlayer), 'big')
 			sendMedicBill(targetPlayer, billAmount, "Fine: Heal")
 		end)
@@ -364,7 +451,6 @@ local function doMassHeal(radius, billAmount)
 		end
 
 		runHealAnimation(function()
-			TriggerServerEvent('esx_ambulancejob:removeItem', healItem)
 			local targetServerIds = {}
 			for _, playerId in ipairs(aliveTargets) do
 				targetServerIds[#targetServerIds + 1] = GetPlayerServerId(playerId)
@@ -687,6 +773,30 @@ Citizen.CreateThread(function()
 		return (dx * dx) + (dy * dy) + (dz * dz)
 	end
 
+	local function processMarkerEntries(entries, playerCoords, sleep, currentHospital, currentPart, currentPartNum)
+		local letSleep = true
+		local isInMarker = false
+
+		for i = 1, #entries do
+			local entry = entries[i]
+			local distSq = getDistSq(playerCoords, entry.coords)
+
+			if distSq < entry.drawDistSq then
+				sleep = 0
+				DrawMarker(entry.marker.type, entry.coords, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, entry.marker.x, entry.marker.y,
+					entry.marker.z, entry.marker.r, entry.marker.g, entry.marker.b, entry.marker.a, false,
+					entry.faceCamera, 2, entry.rotate, nil, nil, false)
+				letSleep = false
+			end
+
+			if distSq < entry.enterDistSq then
+				isInMarker, currentHospital, currentPart, currentPartNum = true, entry.hospital, entry.part, entry.partNum
+			end
+		end
+
+		return sleep, letSleep, isInMarker, currentHospital, currentPart, currentPartNum
+	end
+
 	while true do
 		local sleep = 1200
 		local playerCoords = GetEntityCoords(PlayerPedId())
@@ -695,92 +805,48 @@ Citizen.CreateThread(function()
 		local letSleep, isInMarker, hasExited = true, false, false
 		local currentHospital, currentPart, currentPartNum
 
-		for hospitalNum, hospital in pairs(Config.Hospitals) do
-			if isAmbulance then
-				-- Ambulance Actions
-				for k, v in ipairs(hospital.AmbulanceActions or {}) do
-					local distSq = getDistSq(playerCoords, v)
+		if isAmbulance then
+			sleep, letSleep, isInMarker, currentHospital, currentPart, currentPartNum =
+				processMarkerEntries(HospitalRuntimeCache.ambulanceActions, playerCoords, sleep, currentHospital, currentPart, currentPartNum)
 
-					if distSq < 49.0 then
-						sleep = 0
-						DrawMarker(Config.Marker.type, v, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, Config.Marker.x, Config.Marker.y,
-							Config.Marker.z, Config.Marker.r, Config.Marker.g, Config.Marker.b, Config.Marker.a, false, true,
-							2, true, false, false, false)
-						letSleep = false
-					end
-
-					if distSq < (Config.Marker.x * Config.Marker.x) then
-						isInMarker, currentHospital, currentPart, currentPartNum = true, hospitalNum, 'AmbulanceActions', k
-					end
-				end
-
-				--Pharmacies
-				for k, v in ipairs(hospital.Pharmacies or {}) do
-					local distSq = getDistSq(playerCoords, v)
-
-					if distSq < 49.0 then
-						sleep = 0
-						DrawMarker(Config.Marker.type, v, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, Config.Marker.x, Config.Marker.y,
-							Config.Marker.z, Config.Marker.r, Config.Marker.g, Config.Marker.b, Config.Marker.a, false, false,
-							2, true, false, false, false)
-						letSleep = false
-					end
-
-					if distSq < (Config.Marker.x * Config.Marker.x) then
-						isInMarker, currentHospital, currentPart, currentPartNum = true, hospitalNum, 'Pharmacy', k
-					end
-				end
-
-				-- Vehicle Spawners
-				for k, v in ipairs(hospital.Vehicles or {}) do
-					local distSq = getDistSq(playerCoords, v.Spawner)
-
-					if distSq < 100.0 then
-						sleep = 0
-						DrawMarker(v.Marker.type, v.Spawner, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, v.Marker.x, v.Marker.y, v.Marker
-							.z, v.Marker.r, v.Marker.g, v.Marker.b, v.Marker.a, false, false, 2, v.Marker.rotate, nil, nil,
-							false)
-						letSleep = false
-					end
-
-					if distSq < (v.Marker.x * v.Marker.x) then
-						isInMarker, currentHospital, currentPart, currentPartNum = true, hospitalNum, 'Vehicles', k
-					end
-				end
-
-				-- Helicopter Spawners
-				for k, v in ipairs(hospital.Helicopters or {}) do
-					local distSq = getDistSq(playerCoords, v.Spawner)
-
-					if distSq < 400.0 then
-						sleep = 0
-						DrawMarker(v.Marker.type, v.Spawner, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, v.Marker.x, v.Marker.y, v.Marker
-							.z, v.Marker.r, v.Marker.g, v.Marker.b, v.Marker.a, false, false, 2, v.Marker.rotate, nil, nil,
-							false)
-						letSleep = false
-					end
-
-					if distSq < (v.Marker.x * v.Marker.x) then
-						isInMarker, currentHospital, currentPart, currentPartNum = true, hospitalNum, 'Helicopters', k
-					end
-				end
+			local pharmacySleep, pharmacyLetSleep, pharmacyInMarker, pharmacyHospital, pharmacyPart, pharmacyPartNum =
+				processMarkerEntries(HospitalRuntimeCache.pharmacies, playerCoords, sleep, currentHospital, currentPart, currentPartNum)
+			sleep = pharmacySleep
+			letSleep = letSleep and pharmacyLetSleep
+			if pharmacyInMarker then
+				isInMarker, currentHospital, currentPart, currentPartNum = pharmacyInMarker, pharmacyHospital, pharmacyPart, pharmacyPartNum
 			end
 
-			if isAmbulance then
-				-- Fast Travels
-				for k, v in ipairs(hospital.FastTravels or {}) do
-					local distSq = getDistSq(playerCoords, v.From)
+			local vehicleSleep, vehicleLetSleep, vehicleInMarker, vehicleHospital, vehiclePart, vehiclePartNum =
+				processMarkerEntries(HospitalRuntimeCache.vehicles, playerCoords, sleep, currentHospital, currentPart, currentPartNum)
+			sleep = vehicleSleep
+			letSleep = letSleep and vehicleLetSleep
+			if vehicleInMarker then
+				isInMarker, currentHospital, currentPart, currentPartNum = vehicleInMarker, vehicleHospital, vehiclePart, vehiclePartNum
+			end
 
-					if distSq < 400.0 then
-						sleep = 0
-						DrawMarker(v.Marker.type, v.From, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, v.Marker.x, v.Marker.y, v.Marker.z,
-							v.Marker.r, v.Marker.g, v.Marker.b, v.Marker.a, false, false, 2, v.Marker.rotate, nil, nil, false)
-						letSleep = false
-					end
+			local helicopterSleep, helicopterLetSleep, helicopterInMarker, helicopterHospital, helicopterPart, helicopterPartNum =
+				processMarkerEntries(HospitalRuntimeCache.helicopters, playerCoords, sleep, currentHospital, currentPart, currentPartNum)
+			sleep = helicopterSleep
+			letSleep = letSleep and helicopterLetSleep
+			if helicopterInMarker then
+				isInMarker, currentHospital, currentPart, currentPartNum = helicopterInMarker, helicopterHospital, helicopterPart, helicopterPartNum
+			end
 
-					if distSq < (v.Marker.x * v.Marker.x) then
-						FastTravel(v.To.coords, v.To.heading)
-					end
+			for i = 1, #HospitalRuntimeCache.fastTravels do
+				local entry = HospitalRuntimeCache.fastTravels[i]
+				local distSq = getDistSq(playerCoords, entry.coords)
+
+				if distSq < entry.drawDistSq then
+					sleep = 0
+					DrawMarker(entry.marker.type, entry.coords, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, entry.marker.x, entry.marker.y,
+						entry.marker.z, entry.marker.r, entry.marker.g, entry.marker.b, entry.marker.a, false,
+						entry.faceCamera, 2, entry.rotate, nil, nil, false)
+					letSleep = false
+				end
+
+				if distSq < entry.enterDistSq then
+					FastTravel(entry.to.coords, entry.to.heading)
 				end
 			end
 		end

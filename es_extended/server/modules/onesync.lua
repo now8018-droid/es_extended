@@ -1,5 +1,65 @@
 ESX.OneSync = {}
 
+local mismatchedVehicleTypes = {
+    [`airtug`] = "automobile",
+    [`avisa`] = "submarine",
+    [`blimp`] = "heli",
+    [`blimp2`] = "heli",
+    [`blimp3`] = "heli",
+    [`caddy`] = "automobile",
+    [`caddy2`] = "automobile",
+    [`caddy3`] = "automobile",
+    [`chimera`] = "automobile",
+    [`docktug`] = "automobile",
+    [`forklift`] = "automobile",
+    [`kosatka`] = "submarine",
+    [`mower`] = "automobile",
+    [`policeb`] = "bike",
+    [`ripley`] = "automobile",
+    [`rrocket`] = "automobile",
+    [`sadler`] = "automobile",
+    [`sadler2`] = "automobile",
+    [`scrap`] = "automobile",
+    [`slamtruck`] = "automobile",
+    [`Stryder`] = "automobile",
+    [`submersible`] = "submarine",
+    [`submersible2`] = "submarine",
+    [`thruster`] = "heli",
+    [`towtruck`] = "automobile",
+    [`towtruck2`] = "automobile",
+    [`tractor`] = "automobile",
+    [`tractor2`] = "automobile",
+    [`tractor3`] = "automobile",
+    [`trailersmall2`] = "trailer",
+    [`utillitruck`] = "automobile",
+    [`utillitruck2`] = "automobile",
+    [`utillitruck3`] = "automobile",
+}
+
+local vehicleClassTypes = {
+    [8] = "bike",
+    [11] = "trailer",
+    [13] = "bike",
+    [14] = "boat",
+    [15] = "heli",
+    [16] = "plane",
+    [21] = "train",
+}
+
+local function getVehicleTypeFromModel(model)
+    model = type(model) == "string" and joaat(model) or model
+    if not IsModelInCdimage(model) or not IsModelAVehicle(model) then
+        return nil
+    end
+
+    if mismatchedVehicleTypes[model] then
+        return mismatchedVehicleTypes[model]
+    end
+
+    local vehicleClass = GetVehicleClassFromName(model)
+    return vehicleClassTypes[vehicleClass] or "automobile"
+end
+
 ---@param source number|vector3
 ---@param closest boolean
 ---@param distance? number
@@ -161,10 +221,14 @@ function ESX.OneSync.SpawnVehicle(vehicleModel, coords, heading, vehicleProperti
             if xPlayer then
                 vehicleType = ESX.GetVehicleType(vehicleModel, xPlayer.source)
             end
+
+            if not vehicleType then
+                vehicleType = getVehicleTypeFromModel(vehicleModel)
+            end
         end
 
         if not vehicleType then
-            return reject("No players found nearby to check vehicle type! Alternatively, you can specify the vehicle type manually.")
+            return reject("Unable to resolve vehicle type for this model. Specify the vehicle type manually if needed.")
         end
 
         local createdVehicle = CreateVehicleServerSetter(vehicleModel, vehicleType, coords.x, coords.y, coords.z, heading)

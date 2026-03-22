@@ -833,3 +833,4 @@ RegisterNetEvent("esx:ReturnVehicleType", function(Type, Request)
 end)
 
 GlobalState.playerCount = 0
+GlobalState.serverName = GetConvar("sv_projectName", GetConvar("sv_hostname", "ESX Server"))
