@@ -74,6 +74,48 @@ local function queueInventoryLog(self, kind, payload)
     Core.QueueAsyncLog(kind, payload)
 end
 
+local function ensureInventoryRuntime(self)
+    if not self.inventoryQueue then
+        self.inventoryQueue = {
+            head = 1,
+            tail = 0,
+            items = {},
+            processing = false,
+        }
+    end
+
+    if not self.inventoryRateLimit then
+        self.inventoryRateLimit = {
+            windowStartedAt = 0,
+            actions = 0,
+            blockedUntil = 0,
+            strikes = 0,
+        }
+    end
+
+    return self.inventoryQueue, self.inventoryRateLimit
+end
+
+local function bindInventoryMethod(player, method)
+    return function(arg1, arg2, arg3)
+        if arg1 == player then
+            return method(player, arg2, arg3)
+        end
+
+        return method(player, arg1, arg2)
+    end
+end
+
+local function bindInventoryMutationExecutor(player, method)
+    return function(arg1, arg2, arg3, arg4)
+        if arg1 == player then
+            return method(player, arg2, arg3, arg4)
+        end
+
+        return method(player, arg1, arg2, arg3)
+    end
+end
+
 local function flagInventorySuspicion(self, reason, context)
     Core.FlagSuspiciousPlayer(self.source, reason, context)
 
@@ -85,7 +127,7 @@ local function flagInventorySuspicion(self, reason, context)
 end
 
 local function consumeInventoryRateLimit(self, actionName, itemName, count)
-    local limiter = self.inventoryRateLimit
+    local _, limiter = ensureInventoryRuntime(self)
     local now = GetGameTimer()
     local windowMs = Core.Config.Inventory.rateWindowMs()
 
@@ -235,7 +277,7 @@ local function processInventoryQueue(self)
 end
 
 local function ensureInventoryQueueWorker(self)
-    local queue = self.inventoryQueue
+    local queue = ensureInventoryRuntime(self)
     if queue.processing then
         return
     end
@@ -251,7 +293,7 @@ local function enqueueInventoryMutation(self, actionName, itemName, count, handl
         return false
     end
 
-    local queue = self.inventoryQueue
+    local queue = ensureInventoryRuntime(self)
     local queueSize = (queue.tail - queue.head) + 1
     if queueSize >= Core.Config.Inventory.queueMaxSize() then
         flagInventorySuspicion(self, "inventory_queue_overflow", {
@@ -449,21 +491,10 @@ function InventoryService.setInventoryItem(self, itemName, count)
 end
 
 function InventoryService.attach(self)
-    self.inventoryQueue = {
-        head = 1,
-        tail = 0,
-        items = {},
-        processing = false,
-    }
-    self.inventoryRateLimit = {
-        windowStartedAt = 0,
-        actions = 0,
-        blockedUntil = 0,
-        strikes = 0,
-    }
+    ensureInventoryRuntime(self)
 
-    self.executeInventoryMutation = InventoryService.executeInventoryMutation
-    self.addInventoryItem = InventoryService.addInventoryItem
-    self.removeInventoryItem = InventoryService.removeInventoryItem
-    self.setInventoryItem = InventoryService.setInventoryItem
+    self.executeInventoryMutation = bindInventoryMutationExecutor(self, InventoryService.executeInventoryMutation)
+    self.addInventoryItem = bindInventoryMethod(self, InventoryService.addInventoryItem)
+    self.removeInventoryItem = bindInventoryMethod(self, InventoryService.removeInventoryItem)
+    self.setInventoryItem = bindInventoryMethod(self, InventoryService.setInventoryItem)
 end
