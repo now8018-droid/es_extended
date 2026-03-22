@@ -96,6 +96,26 @@ local function ensureInventoryRuntime(self)
     return self.inventoryQueue, self.inventoryRateLimit
 end
 
+local function bindInventoryMethod(player, method)
+    return function(arg1, arg2, arg3)
+        if arg1 == player then
+            return method(player, arg2, arg3)
+        end
+
+        return method(player, arg1, arg2)
+    end
+end
+
+local function bindInventoryMutationExecutor(player, method)
+    return function(arg1, arg2, arg3, arg4)
+        if arg1 == player then
+            return method(player, arg2, arg3, arg4)
+        end
+
+        return method(player, arg1, arg2, arg3)
+    end
+end
+
 local function flagInventorySuspicion(self, reason, context)
     Core.FlagSuspiciousPlayer(self.source, reason, context)
 
@@ -473,8 +493,8 @@ end
 function InventoryService.attach(self)
     ensureInventoryRuntime(self)
 
-    self.executeInventoryMutation = InventoryService.executeInventoryMutation
-    self.addInventoryItem = InventoryService.addInventoryItem
-    self.removeInventoryItem = InventoryService.removeInventoryItem
-    self.setInventoryItem = InventoryService.setInventoryItem
+    self.executeInventoryMutation = bindInventoryMutationExecutor(self, InventoryService.executeInventoryMutation)
+    self.addInventoryItem = bindInventoryMethod(self, InventoryService.addInventoryItem)
+    self.removeInventoryItem = bindInventoryMethod(self, InventoryService.removeInventoryItem)
+    self.setInventoryItem = bindInventoryMethod(self, InventoryService.setInventoryItem)
 end
