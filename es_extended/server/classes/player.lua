@@ -931,12 +931,15 @@ function CreateExtendedPlayer(playerId, identifier, group, accounts, inventory, 
 
     function self.addWeapon(weaponName, ammo)
         if not self.hasWeapon(weaponName) then
-            local weaponLabel <const> = ESX.GetWeaponLabel(weaponName)
+            local weaponConfig <const> = GetWeaponConfig(weaponName)
+            if not weaponConfig then
+                return
+            end
 
             local weapon = {
                 name = weaponName,
                 ammo = ammo,
-                label = weaponLabel,
+                label = weaponConfig.label or weaponName,
                 components = {},
                 tintIndex = 0,
             }

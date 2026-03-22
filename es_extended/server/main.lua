@@ -285,15 +285,17 @@ local function buildPlayerLoadPayload(identifier, playerId, result)
     -- โหลด loadout จาก DB เสมอ (เซิร์ฟใช้ xPlayer / payload; การให้อาวุธบน ped เป็นของกระเป๋าคัสตอมเมื่อ CustomInventory)
     local loadout = decodePlayerField(result.loadout, {})
     for name, weapon in pairs(loadout) do
-        local label = ESX.GetWeaponLabel(name)
-        if label then
+        local weaponConfig = GetWeaponConfig(name)
+        if weaponConfig then
             payload.loadout[#payload.loadout + 1] = {
                 name = name,
                 ammo = weapon.ammo,
-                label = label,
+                label = weaponConfig.label or name,
                 components = weapon.components or {},
                 tintIndex = weapon.tintIndex or 0,
             }
+        else
+            print(("[^3WARNING^7] Ignoring unknown loadout weapon for ^5%s^7: ^5%s^7"):format(identifier, tostring(name)))
         end
     end
 

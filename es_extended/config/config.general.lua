@@ -6,6 +6,9 @@ Config.Locale = (esxLocale ~= "invalid") and esxLocale or (txAdminLocale ~= "cus
 
 -- ใช้กระเป๋าสคริปต์ของคุณเอง (ไม่ใช้ UI/NUI กระเป๋าเริ่มต้นของ ESX และไม่ใช้ ox_inventory)
 Config.CustomInventory = true
+-- เมื่อเปิด CustomInventory ให้ es_extended restore loadout ลงบน ped ด้วย เพื่อให้อาวุธพื้นฐาน/อาวุธในตัวแสดงหลังเกิดหรือเปลี่ยนสกินได้
+-- หากกระเป๋าคัสตอมของคุณจัดการอาวุธบน ped เองครบแล้ว ค่อยปิดค่านี้เพื่อลดการทำงานซ้ำ
+Config.RestoreLoadoutWithCustomInventory = true
 
 Config.Accounts = {
     bank = {

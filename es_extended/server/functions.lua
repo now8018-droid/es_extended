@@ -312,15 +312,19 @@ function Core.RevertToLastSaved(xPlayer)
     xPlayer.loadoutList = {}
     for name, w in pairs(saved.loadout or {}) do
         if type(w) == "table" then
-            local label = ESX.GetWeaponLabel and ESX.GetWeaponLabel(name) or name
-            xPlayer.loadout[name] = {
-                name = name,
-                ammo = w.ammo or 0,
-                label = label,
-                components = w.components or {},
-                tintIndex = w.tintIndex or 0,
-            }
-            xPlayer.loadoutList[#xPlayer.loadoutList + 1] = xPlayer.loadout[name]
+            local weaponConfig = GetWeaponConfig(name)
+            if weaponConfig then
+                xPlayer.loadout[name] = {
+                    name = name,
+                    ammo = w.ammo or 0,
+                    label = weaponConfig.label or name,
+                    components = w.components or {},
+                    tintIndex = w.tintIndex or 0,
+                }
+                xPlayer.loadoutList[#xPlayer.loadoutList + 1] = xPlayer.loadout[name]
+            else
+                print(("[^3WARNING^7] Ignoring unknown cached loadout weapon for ^5%s^7: ^5%s^7"):format(xPlayer.identifier, tostring(name)))
+            end
         end
     end
     xPlayer.state.metadata = ESX.Table.Clone(saved.metadata or {})
