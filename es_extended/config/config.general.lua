@@ -101,12 +101,26 @@ Config.DiscordRichPresence = {
     enabled = true,
     appId = "", -- ถ้าว่างจะ fallback ไปอ่าน convar esx:discordAppId หรือ discord_app_id
     updateInterval = 30000,
-    statusText = "Playing on ESX",
-    showPlayerName = true,
-    showPlayerId = true,
-    showJob = true,
-    largeAssetKey = "",
-    largeAssetText = "ESX Legacy"
+    status = {
+        text = "Playing on ESX",
+        showPlayerName = true,
+        showPlayerId = true,
+        showJob = true,
+    },
+    assets = {
+        large = {
+            key = "",
+            text = "ESX Legacy",
+        },
+        small = {
+            key = "",
+            text = "",
+        }
+    },
+    buttons = {
+        -- { label = "Join Discord", url = "https://discord.gg/yourserver" },
+        -- { label = "Connect", url = "fivem://connect/127.0.0.1:30120" },
+    }
 }
 Config.PlayerScopeBucketSize = 128.0 -- ขนาดพื้นที่ของ bucket ที่ใช้แบ่ง scope ผู้เล่น
 Config.ScopeDirtyFlushInterval = 250 -- ช่วงเวลาประมวลผลงาน scope incremental ที่ค้างอยู่ หน่วยเป็นมิลลิวินาที

@@ -43,6 +43,7 @@ client_scripts {
 	'client/modules/callback.lua',
 	'client/modules/player_settings.lua',
 	'client/modules/events.lua',
+    'client/modules/discord_presence.lua',
 	'client/modules/death.lua',
 	'client/modules/scaleform.lua',
 	'client/modules/streaming.lua',
