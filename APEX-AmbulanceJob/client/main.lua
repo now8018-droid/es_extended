@@ -130,6 +130,19 @@ local BlockZoneRuntime = {
     isInside = false,
     lastUpdate = 0
 }
+local NuiStateCache = {
+    uiVisible = nil,
+    blockzone = nil,
+    talk = nil,
+    sendsignal = nil,
+    addclass = nil,
+    requestTalk = nil,
+    gang = nil,
+    police = nil,
+    time = nil
+}
+local setBlockZoneUi = function(_) end
+local setDeathUiVisible = function(_) end
 
 for i = 1, #(Config.BlockZone or {}) do
     local zone = Config.BlockZone[i]
@@ -1576,19 +1589,7 @@ Citizen.CreateThread(function()
     end
 end)
 
-local NuiStateCache = {
-    uiVisible = nil,
-    blockzone = nil,
-    talk = nil,
-    sendsignal = nil,
-    addclass = nil,
-    requestTalk = nil,
-    gang = nil,
-    police = nil,
-    time = nil
-}
-
-local function setBlockZoneUi(bool)
+setBlockZoneUi = function(bool)
     if NuiStateCache.blockzone == bool then return end
     NuiStateCache.blockzone = bool
     SendNUIMessage({
@@ -1597,7 +1598,7 @@ local function setBlockZoneUi(bool)
     })
 end
 
-local function setDeathUiVisible(bool)
+setDeathUiVisible = function(bool)
     if NuiStateCache.uiVisible == bool then return end
     NuiStateCache.uiVisible = bool
     SendNUIMessage({
